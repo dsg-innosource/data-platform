@@ -1,9 +1,7 @@
 /*
  * Metabase Model: ADP Tenure
- * URL: [Add Metabase URL here]
+ * URL: https://innosource.metabaseapp.com/model/331-adp-tenure
  * Description: Basic ADP tenure data with calculated hire/termination dates and report date
- * Created: [Add creation date]
- * Last Updated: [Add last updated date]
  */
 
 select file_number,

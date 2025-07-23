@@ -3,8 +3,6 @@
  * Metabase Model: AI Tenure Detail
  * URL: [Add Metabase URL here]
  * Description: Detailed tenure analysis with AI scoring across multiple passes for non-pipeline, pipeline, and rehire scenarios
- * Created: [Add creation date]
- * Last Updated: [Add last updated date]
  */
 
 WITH adp_tenure AS (

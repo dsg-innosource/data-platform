@@ -21,12 +21,12 @@ All Metabase model files should include this standardized header:
 ```sql
 /*
  * Metabase Model: [Model Name]
- * URL: [Metabase dashboard/question URL]
+ * URL: [Metabase dashboard/question URL]  
  * Description: [Brief 1-2 line description]
- * Created: [YYYY-MM-DD]
- * Last Updated: [YYYY-MM-DD]
  */
 ```
+
+Note: Creation and modification dates are tracked by Git, so they are not included in the header.
 
 ## Best Practices
 
