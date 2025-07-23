@@ -1,0 +1,42 @@
+name: SQL Validation
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Lint Python code
+      run: |
+        flake8 transformations/ shared/ tests/ --max-line-length=88
+        black --check transformations/ shared/ tests/
+    
+    - name: Type check
+      run: |
+        mypy transformations/ shared/ tests/ --ignore-missing-imports
+    
+    - name: Run tests
+      run: |
+        pytest tests/ -v --cov=transformations --cov=shared
+    
+    - name: SQL Mesh plan (dry run)
+      run: |
+        cd sqlmesh
+        sqlmesh plan --dry-run

@@ -1,0 +1,29 @@
+# SQL Mesh - Data transformation framework
+sqlmesh
+
+# Data processing and analysis
+pandas>=2.0.0
+numpy>=1.24.0
+sqlalchemy>=2.0.0
+
+# Database connectors
+psycopg2-binary  # PostgreSQL
+pymysql          # MySQL
+snowflake-connector-python  # Snowflake
+duckdb           # DuckDB
+
+# Data validation and quality
+great-expectations
+pydantic
+
+# Utilities
+python-dotenv    # Environment variable management
+click            # CLI utilities
+pyyaml           # YAML parsing
+
+# Development and testing
+pytest
+pytest-cov
+black            # Code formatting
+flake8           # Linting
+mypy             # Type checking
