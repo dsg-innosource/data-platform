@@ -1,7 +1,7 @@
 
 /*
  * Metabase Model: AI Tenure Detail
- * URL: [Add Metabase URL here]
+ * URL: https://innosource.metabaseapp.com/model/288-ai-tenure-detail
  * Description: Detailed tenure analysis with AI scoring across multiple passes for non-pipeline, pipeline, and rehire scenarios
  */
 
