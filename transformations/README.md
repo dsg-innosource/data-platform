@@ -41,6 +41,8 @@ python -m transformations.pipelines.adp_tenure_pipeline --file "data.xls" --snap
 
 **Error Handling:** Errors logged to `logs/pipeline_errors.md`
 
+**Testing:** Run tests with DuckDB: `python transformations/run_tests.py`
+
 ## Directory Structure
 
 ```
@@ -48,6 +50,35 @@ transformations/
 ├── adp/                    # ADP-specific modules
 ├── pipelines/              # Main pipeline orchestration scripts
 ├── sql/                    # SQL templates and queries
+├── tests/                  # Unit and integration tests
 ├── logs/                   # Error and execution logs
-└── config.yaml            # Pipeline configuration
+├── config.yaml            # Pipeline configuration
+├── config.test.yaml       # Test configuration (DuckDB)
+└── run_tests.py           # Test runner script
 ```
+
+## Testing
+
+The pipeline includes comprehensive tests using DuckDB as a test database:
+
+```bash
+# Run all tests
+python transformations/run_tests.py
+
+# Run only unit tests
+python transformations/run_tests.py --test-type unit
+
+# Run only integration tests  
+python transformations/run_tests.py --test-type integration
+
+# Verbose output
+python transformations/run_tests.py --verbose
+```
+
+**Test Coverage:**
+- Extract module: File reading, validation, data type preservation
+- Transform module: Data cleaning, column mapping, validation
+- Load module: Database operations with DuckDB
+- Integration: Complete pipeline from Excel to database
+
+**Safe Testing:** All tests use DuckDB instead of PostgreSQL, so you can test the complete pipeline without affecting production data.

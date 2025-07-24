@@ -5,14 +5,14 @@ from typing import Dict, Any
 from dotenv import load_dotenv
 
 
-def load_config() -> Dict[str, Any]:
-    """Load configuration from config.yaml file with environment variable substitution."""
+def load_config(config_file: str = "config.yaml") -> Dict[str, Any]:
+    """Load configuration from config file with environment variable substitution."""
     # Load environment variables from .env file
     env_path = Path(__file__).parent.parent / ".env"
     if env_path.exists():
         load_dotenv(env_path)
     
-    config_path = Path(__file__).parent.parent / "config.yaml"
+    config_path = Path(__file__).parent.parent / config_file
     
     if not config_path.exists():
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
@@ -33,35 +33,46 @@ def _substitute_env_vars(obj):
         return [_substitute_env_vars(item) for item in obj]
     elif isinstance(obj, str) and obj.startswith("${") and obj.endswith("}"):
         env_var = obj[2:-1]  # Remove ${ and }
-        return os.getenv(env_var, obj)  # Return original if env var not found
+        env_value = os.getenv(env_var)
+        if env_value is None:
+            # For testing, return a placeholder if env var not found
+            return f"MISSING_{env_var}"
+        return env_value
     else:
         return obj
 
 
-def get_database_config() -> Dict[str, Any]:
+def get_database_config(config_file: str = "config.yaml") -> Dict[str, Any]:
     """Get database configuration."""
-    config = load_config()
+    config = load_config(config_file)
     return config.get('database', {})
 
 
-def get_logging_config() -> Dict[str, Any]:
+def get_logging_config(config_file: str = "config.yaml") -> Dict[str, Any]:
     """Get logging configuration."""
-    config = load_config()
+    config = load_config(config_file)
     return config.get('logging', {})
 
 
-def get_adp_config() -> Dict[str, Any]:
+def get_adp_config(config_file: str = "config.yaml") -> Dict[str, Any]:
     """Get ADP-specific configuration."""
-    config = load_config()
+    config = load_config(config_file)
     return config.get('adp', {})
 
 
-def get_database_url() -> str:
+def get_database_url(config_file: str = "config.yaml") -> str:
     """Construct database URL from configuration."""
-    db_config = get_database_config()
+    db_config = get_database_config(config_file)
     
-    return (
-        f"postgresql://{db_config['username']}:{db_config['password']}"
-        f"@{db_config['host']}:{db_config['port']}/{db_config['database']}"
-        f"?sslmode={db_config['sslmode']}"
-    )
+    engine = db_config.get('engine', 'postgresql')
+    
+    if engine == 'duckdb':
+        return f"duckdb:///{db_config['database']}"
+    elif engine == 'postgresql':
+        return (
+            f"postgresql://{db_config['username']}:{db_config['password']}"
+            f"@{db_config['host']}:{db_config['port']}/{db_config['database']}"
+            f"?sslmode={db_config.get('sslmode', 'prefer')}"
+        )
+    else:
+        raise ValueError(f"Unsupported database engine: {engine}")
