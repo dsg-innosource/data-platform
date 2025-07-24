@@ -11,6 +11,7 @@ psycopg2-binary  # PostgreSQL
 pymysql          # MySQL
 snowflake-connector-python  # Snowflake
 duckdb           # DuckDB
+duckdb-engine    # DuckDB SQLAlchemy driver
 
 # Data validation and quality
 great-expectations
@@ -20,10 +21,13 @@ pydantic
 python-dotenv    # Environment variable management
 click            # CLI utilities
 pyyaml           # YAML parsing
+openpyxl         # Excel file reading (for pandas Excel support)
+xlrd             # Excel file reading (for .xls files)
 
 # Development and testing
 pytest
 pytest-cov
+psutil           # System and process monitoring
 black            # Code formatting
 flake8           # Linting
 mypy             # Type checking

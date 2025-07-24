@@ -1,0 +1,13 @@
+database:
+  engine: "duckdb"
+  database: "test_adp.db"  # Local file-based database for testing
+  # No environment variables needed for DuckDB testing
+  
+logging:
+  level: "DEBUG"
+  error_log_file: "transformations/logs/test_pipeline_errors.md"
+  
+adp:
+  bronze_table: "bronze.adp_tenure_history"
+  silver_table: "silver.fact_active_headcount" 
+  excluded_client_codes: ["01100"]
