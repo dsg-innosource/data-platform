@@ -27,6 +27,7 @@ xlrd             # Excel file reading (for .xls files)
 # Development and testing
 pytest
 pytest-cov
+psutil           # System and process monitoring
 black            # Code formatting
 flake8           # Linting
 mypy             # Type checking
