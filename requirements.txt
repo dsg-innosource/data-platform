@@ -20,6 +20,7 @@ pydantic
 python-dotenv    # Environment variable management
 click            # CLI utilities
 pyyaml           # YAML parsing
+openpyxl         # Excel file reading (for pandas Excel support)
 
 # Development and testing
 pytest
