@@ -34,7 +34,14 @@ def run_tests(test_type="all", verbose=False):
             str(tests_dir / "test_load.py")
         ])
     elif test_type == "integration":
-        cmd.append(str(tests_dir / "test_integration.py"))
+        cmd.extend([
+            str(tests_dir / "test_integration.py"),
+            str(tests_dir / "test_monday_workflow.py")
+        ])
+    elif test_type == "performance":
+        cmd.append(str(tests_dir / "test_performance.py"))
+    elif test_type == "workflow":
+        cmd.append(str(tests_dir / "test_monday_workflow.py"))
     else:  # all
         cmd.append(str(tests_dir))
     
@@ -61,7 +68,7 @@ def main():
     parser = argparse.ArgumentParser(description="Run ADP pipeline tests with DuckDB")
     parser.add_argument(
         "--test-type", 
-        choices=["all", "unit", "integration"], 
+        choices=["all", "unit", "integration", "performance", "workflow"], 
         default="all",
         help="Type of tests to run (default: all)"
     )

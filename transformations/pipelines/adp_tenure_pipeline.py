@@ -34,6 +34,7 @@ from adp.load import (
     delete_existing_data
 )
 from adp.config import get_logging_config
+from adp.date_utils import get_monday_dates, validate_monday_dates, format_business_period
 
 
 def setup_logging():
@@ -55,30 +56,7 @@ def setup_logging():
     )
 
 
-def get_monday_dates(target_date: datetime = None) -> tuple[str, str]:
-    """
-    Calculate snapshot_date (current Monday) and report_date (previous Monday).
-    
-    Args:
-        target_date: Date to calculate from. If None, uses today.
-        
-    Returns:
-        Tuple of (snapshot_date, report_date) as YYYY-MM-DD strings
-    """
-    if target_date is None:
-        target_date = datetime.now()
-    
-    # Find the Monday of the current week
-    days_since_monday = target_date.weekday()  # Monday is 0
-    current_monday = target_date - timedelta(days=days_since_monday)
-    
-    # Previous Monday is 7 days before current Monday
-    previous_monday = current_monday - timedelta(days=7)
-    
-    snapshot_date = current_monday.strftime('%Y-%m-%d')
-    report_date = previous_monday.strftime('%Y-%m-%d')
-    
-    return snapshot_date, report_date
+# get_monday_dates function moved to adp.date_utils module
 
 
 def log_error_to_markdown(error_msg: str, context: str = ""):
@@ -130,17 +108,21 @@ def main():
         if args.snapshot_date and args.report_date:
             snapshot_date = args.snapshot_date
             report_date = args.report_date
+            # Validate provided dates
+            validate_monday_dates(snapshot_date, report_date)
         elif args.snapshot_date:
             # If only snapshot_date provided, calculate report_date as snapshot_date - 7 days
             snapshot_dt = datetime.strptime(args.snapshot_date, '%Y-%m-%d')
             report_dt = snapshot_dt - timedelta(days=7)
             snapshot_date = args.snapshot_date
             report_date = report_dt.strftime('%Y-%m-%d')
+            validate_monday_dates(snapshot_date, report_date)
         else:
-            # Use Monday logic
+            # Use Monday logic (automatic calculation)
             snapshot_date, report_date = get_monday_dates()
         
-        logger.info(f"Starting ADP pipeline for snapshot_date: {snapshot_date}, report_date: {report_date}")
+        logger.info(f"Starting ADP pipeline for {format_business_period(snapshot_date, report_date)}")
+        logger.info(f"Snapshot date: {snapshot_date}, Report date: {report_date}")
         
         # Step 1: Extract
         logger.info(f"Reading ADP file: {args.file}")
