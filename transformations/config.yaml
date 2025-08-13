@@ -1,0 +1,16 @@
+database:
+  host: "${DB_HOST}"
+  port: "${DB_PORT}"
+  database: "${DB_NAME}"
+  username: "${DB_USERNAME}"
+  password: "${DB_PASSWORD}"
+  sslmode: "require"
+  
+logging:
+  level: "INFO"
+  error_log_file: "transformations/logs/pipeline_errors.md"
+  
+adp:
+  bronze_table: "bronze.adp_tenure_history"
+  silver_table: "silver.fact_active_headcount"
+  excluded_client_codes: ["01100"]
