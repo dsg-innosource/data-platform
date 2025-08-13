@@ -13,6 +13,7 @@ This directory contains SQL files used to create Metabase models for reporting a
 Use descriptive names that indicate the business function:
 - `adp-tenure.sql` - Employee tenure data from ADP
 - `ai-tenure-detail.sql` - Detailed AI scoring analysis
+- `applicant-sources.sql` - Application-level source tracking for recruitment analytics
 - `requisition-application-progress.sql` - Applications and their progression through hiring process
 
 ## Comment Header Standard
