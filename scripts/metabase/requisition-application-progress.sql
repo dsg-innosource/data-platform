@@ -1,9 +1,7 @@
-/*
- * Metabase Model: Requisition Application Progress
- * URL: https://innosource.metabaseapp.com/model/305-requisition-application-progress
- * Description: Applications with related Requisitions, and their progression through the hiring process.
- */
-
+-- -------------------------------------------------------------------------------------------
+-- Requisition Application Progress
+-- -------------------------------------------------------------------------------------------
+-- METABASE URL: https://innosource.metabaseapp.com/model/305-requisition-application-progress
 with reqs as (
   select
     c.id as client_id,
@@ -42,6 +40,7 @@ with reqs as (
 )
 ,req_applicants as (select ra.*
                          , jr.score as jakib_score
+                         , jr.conversation_type
                          , rs.resume_only_score
                          , jr.created_at as score_created_at
                          , rs.created_at as resume_only_score_created_at
@@ -233,6 +232,7 @@ final as (
     ra.first_name || ' ' || ra.last_name as applicant_name,
     ra.email,
     ra.jakib_score,
+    ra.conversation_type,
     ra.resume_only_score,
     case
         	when ra.jakib_score > 86 or ra.resume_only_score > 81  then 'GREEN'
