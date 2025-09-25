@@ -31,7 +31,8 @@ with reqs as (
                                     a.id as applicant_id,
                                     a.first_name,
                                     a.last_name,
-                                    a.email
+                                    a.email,
+                                    a.phone_number
                     from reqs r
                              inner join bronze.portal_requisition_statistics rs on
                         r.requisition_id = rs.requisition_id
@@ -231,6 +232,7 @@ final as (
     ra.applicant_id,
     ra.first_name || ' ' || ra.last_name as applicant_name,
     ra.email,
+    ra.phone_number,
     ra.jakib_score,
     ra.conversation_type,
     ra.resume_only_score,
