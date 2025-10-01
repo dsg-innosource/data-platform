@@ -63,4 +63,4 @@ logs/
 # Configuration files with secrets
 .env
 config.ini
-secrets.yml
+secrets.ymldocs/exports/
