@@ -20,18 +20,34 @@ if ! command -v pandoc &> /dev/null; then
     exit 1
 fi
 
+# Add LaTeX to PATH if it exists
+if [ -d "/Library/TeX/texbin" ]; then
+    export PATH="/Library/TeX/texbin:$PATH"
+fi
+
 # Check if pdflatex is available for automated PDF generation
 if command -v pdflatex &> /dev/null; then
-    echo "🔄 Generating PDF with pdflatex..."
+    echo "🔄 Generating PDF..."
 
-    # Generate PDF directly with pandoc
-    pandoc "$INPUT_FILE" -o "$OUTPUT_PDF" \
-        --pdf-engine=pdflatex \
-        -V geometry:margin=1in \
-        -V documentclass=article \
-        -V fontsize=11pt \
-        --metadata title="Billing Summary Report" \
-        2>&1 | grep -v "Missing character"
+    # Try XeLaTeX first (handles Unicode better)
+    if command -v xelatex &> /dev/null; then
+        pandoc "$INPUT_FILE" -o "$OUTPUT_PDF" \
+            --pdf-engine=xelatex \
+            -V geometry:margin=1in \
+            -V documentclass=article \
+            -V fontsize=11pt \
+            --metadata title="Billing Summary Report" \
+            2>&1 | tail -3
+    else
+        # Fall back to pdflatex
+        pandoc "$INPUT_FILE" -o "$OUTPUT_PDF" \
+            --pdf-engine=pdflatex \
+            -V geometry:margin=1in \
+            -V documentclass=article \
+            -V fontsize=11pt \
+            --metadata title="Billing Summary Report" \
+            2>&1 | tail -3
+    fi
 
     if [ -f "$OUTPUT_PDF" ]; then
         echo "✅ PDF generated successfully: $OUTPUT_PDF"
