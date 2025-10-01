@@ -8,22 +8,6 @@ This document describes the data structure for the Requisition Application Progr
 
 ```mermaid
 erDiagram
-    portal_clients ||--o{ portal_requisitions : "has"
-    portal_requisitions ||--o{ portal_requisition_statistics : "tracks"
-    portal_requisitions ||--o{ portal_applicant_job_listings : "has"
-    portal_requisitions ||--o{ portal_jakib_results : "has"
-    portal_requisitions ||--o{ portal_resume_scores : "has"
-    portal_requisitions ||--o{ portal_applicant_views : "has"
-    portal_requisitions ||--o{ portal_applicant_job_offer_responses : "has"
-    portal_applicants ||--o{ portal_requisition_statistics : "appears_in"
-    portal_applicants ||--o{ portal_applicant_job_listings : "applies_via"
-    portal_applicants ||--o{ portal_jakib_results : "scored_by"
-    portal_applicants ||--o{ portal_resume_scores : "scored_by"
-    portal_applicants ||--o{ portal_applicant_views : "viewed_in"
-    portal_applicants ||--o{ portal_applicant_job_offer_responses : "responds_to"
-    portal_users ||--o{ portal_applicant_views : "performs"
-    portal_users ||--o{ portal_requisition_statistics : "creates"
-
     portal_clients {
         int id PK
         string name
@@ -93,6 +77,22 @@ erDiagram
         int job_offer_response_id
         timestamp created_at
     }
+
+    portal_clients ||--o{ portal_requisitions : "has"
+    portal_requisitions ||--o{ portal_requisition_statistics : "tracks"
+    portal_requisitions ||--o{ portal_applicant_job_listings : "has"
+    portal_requisitions ||--o{ portal_jakib_results : "has"
+    portal_requisitions ||--o{ portal_resume_scores : "has"
+    portal_requisitions ||--o{ portal_applicant_views : "has"
+    portal_requisitions ||--o{ portal_applicant_job_offer_responses : "has"
+    portal_applicants ||--o{ portal_requisition_statistics : "appears_in"
+    portal_applicants ||--o{ portal_applicant_job_listings : "applies_via"
+    portal_applicants ||--o{ portal_jakib_results : "scored_by"
+    portal_applicants ||--o{ portal_resume_scores : "scored_by"
+    portal_applicants ||--o{ portal_applicant_views : "viewed_in"
+    portal_applicants ||--o{ portal_applicant_job_offer_responses : "responds_to"
+    portal_users ||--o{ portal_applicant_views : "performs"
+    portal_users ||--o{ portal_requisition_statistics : "creates"
 ```
 
 ## Data Flow
