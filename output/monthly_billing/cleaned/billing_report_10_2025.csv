@@ -1,0 +1,10 @@
+Date,Month-Year,Client,Name,Billable Hours,Task,Task ID
+2025-09-04,2025-09,Tri County Home Care,Sean Beal,3.0,Add WellSky Profiles and Address Integration,DSG-2790
+2025-09-08,2025-09,Tri County Home Care,Sean Beal,1.5,Add DS319 Goals CG Needed and comprehensive goals system documentation,DSG-2832
+2025-09-08,2025-09,Tri County Home Care,Sean Beal,1.25,Update DS304 to include expanded activity types,DSG-2829
+2025-09-08,2025-09,Tri County Home Care,Sean Beal,1.0,Update DS304 Activity Tags documentation and query filter,DSG-2828
+2025-09-18,2025-09,Tri County Home Care,Sean Beal,2.0,Add multi-office employee bonus calculation support,DSG-2913
+2025-09-22,2025-09,Tri County Home Care,Sean Beal,0.5,"Is this possible a ""Quick Fix""",DSG-2936
+2025-09-22,2025-09,Tri County Home Care,Sean Beal,1.0,test changes to multi-office code,DSG-2937
+2025-09-22,2025-09,Tri County Home Care,Sean Beal,1.0,Begin automated Activity Tag & Goal process,DSG-2938
+2025-09-29,2025-09,Job News,Joe Fusco,1.0,resolve JN account assignment issues,DSG-2943

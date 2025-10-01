@@ -1,0 +1,54 @@
+# Billing Summary Report
+
+**Report Period:** 2025-09-01 to 2025-09-30
+**Generated:** 2025-10-01 10:48
+
+---
+
+## Summary by Client
+
+| Client | Billable Hours | Rate | Amount | Remaining Budget | Months Left |
+|--------|----------------|------|--------|------------------|-------------|
+| Job News | 1.00 | $175.00 | $175.00 | $25.00 | 0.1 ⚠️ |
+| Tri County Home Care | 11.25 | $150.00 | $1687.50 | $1312.50 | 0.8 ⚠️ |
+
+**Grand Total:** 12.25 hours = $1862.50
+
+### ⚠️ Budget Alerts
+
+- **Job News**: Only 0.1 months of budget remaining ($25.00)
+- **Tri County Home Care**: Only 0.8 months of budget remaining ($1312.50)
+
+---
+
+## Summary by Team Member
+
+| Name | Billable Hours | Amount |
+|------|----------------|--------|
+| Joe Fusco | 1.00 | $175.00 |
+| Sean Beal | 11.25 | $1687.50 |
+
+---
+
+## Summary by Client and Month
+
+| Client | Month | Billable Hours | Amount |
+|--------|-------|----------------|--------|
+| Job News | 2025-09 | 1.00 | $175.00 |
+| Tri County Home Care | 2025-09 | 11.25 | $1687.50 |
+
+---
+
+## Detailed Billing Log
+
+| Date | Client | Name | Hours | Rate | Amount | Task |
+|------|--------|------|-------|------|--------|------|
+| 2025-09-04 | Tri County Home Care | Sean Beal | 3.00 | $150.00 | $450.00 | Add WellSky Profiles and Address Integration |
+| 2025-09-08 | Tri County Home Care | Sean Beal | 1.50 | $150.00 | $225.00 | Add DS319 Goals CG Needed and comprehensive goals system documentation |
+| 2025-09-08 | Tri County Home Care | Sean Beal | 1.25 | $150.00 | $187.50 | Update DS304 to include expanded activity types |
+| 2025-09-08 | Tri County Home Care | Sean Beal | 1.00 | $150.00 | $150.00 | Update DS304 Activity Tags documentation and query filter |
+| 2025-09-18 | Tri County Home Care | Sean Beal | 2.00 | $150.00 | $300.00 | Add multi-office employee bonus calculation support |
+| 2025-09-22 | Tri County Home Care | Sean Beal | 0.50 | $150.00 | $75.00 | Is this possible a "Quick Fix" |
+| 2025-09-22 | Tri County Home Care | Sean Beal | 1.00 | $150.00 | $150.00 | test changes to multi-office code |
+| 2025-09-22 | Tri County Home Care | Sean Beal | 1.00 | $150.00 | $150.00 | Begin automated Activity Tag & Goal process |
+| 2025-09-29 | Job News | Joe Fusco | 1.00 | $175.00 | $175.00 | resolve JN account assignment issues |

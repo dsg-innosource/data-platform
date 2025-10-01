@@ -65,10 +65,8 @@ logs/
 config.ini
 secrets.yml
 
-# Billing data (contains sensitive client information)
-raw/clickup_billing/*.csv
-output/monthly_billing/cleaned/*.csv
-output/monthly_billing/reports/*.md
+# Billing data - keeping in repo for historical records
+# (No exclusions - all billing files are tracked)
 
 # Exports
 docs/exports/
