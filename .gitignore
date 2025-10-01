@@ -63,4 +63,12 @@ logs/
 # Configuration files with secrets
 .env
 config.ini
-secrets.ymldocs/exports/
+secrets.yml
+
+# Billing data (contains sensitive client information)
+raw/clickup_billing/*.csv
+output/monthly_billing/cleaned/*.csv
+output/monthly_billing/reports/*.md
+
+# Exports
+docs/exports/

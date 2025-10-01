@@ -1,0 +1,34 @@
+# ClickUp Billing Report Configuration
+
+# Column mapping from ClickUp export to final output
+column_mapping:
+  Username: Name
+  "Start Text": Date
+  "Time Tracked Text": Billable Hours
+  "Task Name": Task
+  "Custom Task ID": Task ID
+  CATEGORY: Client
+
+# Category transformations
+category_transforms:
+  "BILLABLE - JN": "Job News"
+  "BILLABLE - VA": "Tri County Home Care"
+
+# Billing rate card (hourly rates by client)
+billing_rates:
+  "Job News": 175.00
+  "Tri County Home Care": 150.00
+
+# Remaining budget $$ by client (update monthly)
+remaining_budget:
+  "Job News": 200.0
+  "Tri County Home Care": 3000.0
+
+# Date format settings
+date_input_format: "%m/%d/%Y, %I:%M:%S %p %Z" # ClickUp format: "09/29/2025, 1:23:21 PM EDT"
+date_output_format: "%Y-%m-%d" # ISO format
+
+# Output settings
+output:
+  csv_filename_template: "billing_report_{month}_{year}.csv"
+  report_filename_template: "billing_summary_{month}_{year}.md"
