@@ -11,10 +11,9 @@ The process takes raw ClickUp CSV exports and:
 4. Calculates billing amounts based on hourly rates
 5. Tracks remaining budget and burn rate
 6. Generates budget alerts when < 2 months remaining
-7. Generates a clean CSV for accounting
-8. Creates a detailed Markdown summary report
-9. Exports summary report to PDF
-10. Archives previous month's data
+7. Generates a clean CSV for accounting (with actual work date range)
+8. Creates a detailed Markdown summary report (with billing month)
+9. Archives previous month's data
 
 ## Monthly Workflow
 
@@ -57,14 +56,26 @@ cd scripts/billing
 python3 process_clickup_billing.py
 ```
 
-### 4. Generate PDF Report
+### 4. Review Outputs
 
-Convert the summary report to PDF:
-```bash
-./scripts/billing/export_pdf.sh output/monthly_billing/reports/billing_summary_MM_YYYY.md
-```
+The script generates files in `output/monthly_billing/`:
 
-This will create: `output/monthly_billing/reports/billing_summary_MM_YYYY.pdf`
+**Clean CSV** (`cleaned/billing_report_YYYY-MM-DD_to_YYYY-MM-DD.csv`)
+- Date range shows actual work period
+- Example: `billing_report_2025-09-04_to_2025-09-29.csv`
+- Simplified format for accounting
+- Contains: Date, Month-Year, Client, Name, Billable Hours, Task, Task ID
+
+**Summary Report** (`reports/billing_summary_YYYY-MM.md`)
+- Month/year shows current billing month
+- Example: `billing_summary_2025-10.md` (October billing for September work)
+- Internal reference document with:
+  - Total hours and amounts by client
+  - Remaining budget and burn rate (months left)
+  - Budget alerts when < 2 months remaining
+  - Total hours by team member
+  - Monthly breakdown by client
+  - Detailed billing log
 
 ### 5. Archive Previous Month
 
@@ -79,28 +90,7 @@ This moves:
 - Raw CSV from `raw/clickup_billing/` → `raw/clickup_billing/archive/YYYY-MM/`
 - Reports from `output/monthly_billing/` → `output/monthly_billing/archive/YYYY-MM/`
 
-### 6. Review Outputs
-
-The script generates files in `output/monthly_billing/`:
-
-**Clean CSV** (`cleaned/billing_report_MM_YYYY.csv`)
-- Simplified format for accounting
-- Contains: Date, Month-Year, Client, Name, Billable Hours, Task, Task ID
-
-**Summary Report** (`reports/billing_summary_MM_YYYY.md`)
-- Internal reference document with:
-  - Total hours and amounts by client
-  - Remaining budget and burn rate (months left)
-  - Budget alerts when < 2 months remaining
-  - Total hours by team member
-  - Monthly breakdown by client
-  - Detailed billing log
-
-**PDF Report** (`reports/billing_summary_MM_YYYY.pdf`)
-- Professional PDF version of summary report
-- Ready to print or email
-
-### 7. Update Remaining Budget
+### 6. Update Remaining Budget
 
 After reviewing the report, update `config.yaml` with the new remaining budget for next month:
 
@@ -180,36 +170,3 @@ Or they're already in your project's `requirements.txt`:
 pandas>=2.0.0
 pyyaml>=6.0
 ```
-
-### PDF Generation (Required)
-
-For automated PDF generation, you need BasicTeX:
-
-**macOS:**
-```bash
-brew install basictex
-# After installation, update your PATH:
-eval "$(/usr/libexec/path_helper)"
-# Or restart your terminal
-```
-
-**Verify installation:**
-```bash
-which pdflatex  # Should show: /Library/TeX/texbin/pdflatex
-```
-
-If `pdflatex` is not found after installation, add to your `~/.zshrc` or `~/.bash_profile`:
-```bash
-export PATH="/Library/TeX/texbin:$PATH"
-```
-
-### Alternative: Manual PDF Creation
-
-If you prefer not to install LaTeX, you can manually create PDFs:
-
-1. Run the export script (opens HTML in browser):
-   ```bash
-   ./scripts/billing/export_pdf.sh output/monthly_billing/reports/billing_summary_MM_YYYY.md
-   ```
-
-2. Press ⌘+P to print and save as PDF
