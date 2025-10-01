@@ -1,6 +1,6 @@
 # Requisition Application Progress Data Model
 
-This document describes the data structure for the Requisition Application Progress model in Metabase.
+This document describes the data structure for the Requisition Application Progress with Recruiter Names model in Metabase.
 
 **Metabase URL:** https://innosource.metabaseapp.com/model/305-requisition-application-progress
 
@@ -21,6 +21,8 @@ erDiagram
     portal_applicants ||--o{ portal_resume_scores : "scored_by"
     portal_applicants ||--o{ portal_applicant_views : "viewed_in"
     portal_applicants ||--o{ portal_applicant_job_offer_responses : "responds_to"
+    portal_users ||--o{ portal_applicant_views : "performs"
+    portal_users ||--o{ portal_requisition_statistics : "creates"
 
     portal_clients {
         int id PK
@@ -43,9 +45,16 @@ erDiagram
         string phone_number
     }
 
+    portal_users {
+        int id PK
+        string first_name
+        string last_name
+    }
+
     portal_requisition_statistics {
         int requisition_id FK
         int applicant_id FK
+        int created_by_recruiter_id FK
         int requisition_statistic_type_id
         timestamp created_at
     }
@@ -74,6 +83,7 @@ erDiagram
     portal_applicant_views {
         int requisition_id FK
         int applicant_id FK
+        int recruiter_id FK
         timestamp created_at
     }
 
@@ -87,18 +97,18 @@ erDiagram
 
 ## Data Flow
 
-The model tracks applicant progression through the recruitment pipeline:
+The model tracks applicant progression through the recruitment pipeline, with recruiter attribution at each stage:
 
 ```mermaid
 flowchart LR
-    A[Application] --> B[Applicant View]
-    B --> C[Phone Screen]
-    C --> D[Inno Interview]
-    D --> E[Client Interview]
-    E --> F[Offer]
+    A[Application] --> B[Applicant View<br/>by Recruiter]
+    B --> C[Phone Screen<br/>by Recruiter]
+    C --> D[Inno Interview<br/>by Recruiter]
+    D --> E[Client Interview<br/>by Recruiter]
+    E --> F[Offer<br/>by Recruiter]
     F --> G{Response}
-    G -->|Accepted| H[Offer Accepted]
-    G -->|Other| I[Rejected to Pool]
+    G -->|Accepted<br/>by Recruiter| H[Offer Accepted]
+    G -->|Rejected<br/>by Recruiter| I[Rejected to Pool]
     H --> J[Hire]
 ```
 
@@ -132,6 +142,14 @@ The final output includes:
 - AI scores (Jakib and resume-only)
 - AI category and method (MINNIE vs NO AI)
 - Date progression through each recruitment stage
+- **Recruiter names** associated with each stage:
+  - First view recruiter
+  - Phone screen recruiter
+  - Inno interview recruiter
+  - Client interview recruiter
+  - Offer recruiter
+  - Offer accepted recruiter
+  - Rejected recruiter
 - Pre-score view flag (whether applicant was viewed before scoring)
 
 ## Filters
