@@ -29,4 +29,4 @@ date_input_format: "%m/%d/%Y, %I:%M:%S %p %Z" # ClickUp format: "09/29/2025, 1:2
 date_output_format: "%Y-%m-%d" # ISO format
 
 # Note: Output filenames are automatically generated based on actual date range in the data
-# Format: billing_report_YYYY-MM-DD_to_YYYY-MM-DD.csv
+# Format: billing_report_YYYY-MM-DD_to_YYYY-MM-DD.csv (e.g., billing_report_2025-09-04_to_2025-09-29.csv)
