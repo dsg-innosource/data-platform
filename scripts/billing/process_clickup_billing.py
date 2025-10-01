@@ -289,11 +289,13 @@ def main():
   min_dt = pd.to_datetime(min_date)
   max_dt = pd.to_datetime(max_date)
 
-  # Format date range for filename: YYYY-MM-DD_to_YYYY-MM-DD
+  # CSV filename: Full date range (YYYY-MM-DD_to_YYYY-MM-DD)
   date_range = f"{min_dt.strftime('%Y-%m-%d')}_to_{max_dt.strftime('%Y-%m-%d')}"
-
   csv_filename = f"billing_report_{date_range}.csv"
-  report_filename = f"billing_summary_{date_range}.md"
+
+  # Report filename: Just month/year (YYYY-MM)
+  month_year = min_dt.strftime('%Y-%m')
+  report_filename = f"billing_summary_{month_year}.md"
 
   # Save cleaned CSV (without billing amounts - for accounting)
   output_csv = output_csv_dir / csv_filename
