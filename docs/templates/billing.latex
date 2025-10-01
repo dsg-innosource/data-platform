@@ -1,0 +1,87 @@
+\documentclass[11pt,letterpaper]{article}
+
+% Packages
+\usepackage{fontspec}
+\usepackage{geometry}
+\usepackage{longtable}
+\usepackage{booktabs}
+\usepackage[table]{xcolor}
+
+% Set sans-serif font
+\setmainfont{Helvetica}
+\setsansfont{Helvetica}
+\setmonofont{Courier New}
+
+% Page geometry
+\geometry{
+  letterpaper,
+  top=1in,
+  bottom=1in,
+  left=0.75in,
+  right=0.75in
+}
+
+% Remove page numbers
+\pagestyle{empty}
+
+% Table settings
+\setlength{\tabcolsep}{10pt}
+\renewcommand{\arraystretch}{1.4}
+
+% Custom table colors
+\definecolor{tableheader}{RGB}{52, 73, 94}
+\definecolor{tablerow}{RGB}{249, 249, 249}
+
+% Custom section formatting
+\usepackage{titlesec}
+\titleformat{\section}
+  {\Large\bfseries\sffamily}{\thesection}{1em}{}[\vspace{-0.5em}\rule{\textwidth}{0.4pt}]
+\titleformat{\subsection}
+  {\large\bfseries\sffamily}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}
+  {\normalsize\bfseries\sffamily\color{red!70!black}}{\thesubsubsection}{1em}{}
+
+% Adjust spacing
+\titlespacing*{\section}{0pt}{1.5em}{0.8em}
+\titlespacing*{\subsection}{0pt}{1.2em}{0.5em}
+\titlespacing*{\subsubsection}{0pt}{1em}{0.3em}
+
+% Redefine table commands for better formatting with borders
+\let\oldlongtable\longtable
+\let\endoldlongtable\endlongtable
+\renewenvironment{longtable}[1]{%
+  \rowcolors{2}{white}{tablerow}
+  \oldlongtable{#1}
+  \toprule
+}{%
+  \bottomrule
+  \endoldlongtable
+}
+
+% Remove default title formatting
+\renewcommand{\maketitle}{}
+
+\begin{document}
+
+% Custom title
+\begin{center}
+  {\Huge\bfseries Billing Summary Report}
+  \vspace{0.5em}
+
+  \large
+  $if(report-period)$
+  \textbf{Report Period:} $report-period$
+  $endif$
+
+  $if(generated)$
+  \quad\textbf{Generated:} $generated$
+  $endif$
+\end{center}
+
+\vspace{1em}
+\noindent\rule{\textwidth}{0.5pt}
+\vspace{1em}
+
+$body$
+
+\end{document}

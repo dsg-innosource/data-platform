@@ -29,24 +29,41 @@ fi
 if command -v pdflatex &> /dev/null; then
     echo "🔄 Generating PDF..."
 
-    # Try XeLaTeX first (handles Unicode better)
-    if command -v xelatex &> /dev/null; then
+    # Get the script directory to find the template
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+    PROJECT_ROOT="$( cd "$SCRIPT_DIR/../.." && pwd )"
+    TEMPLATE="$PROJECT_ROOT/docs/templates/billing.latex"
+
+    # Extract report period and generated date from markdown if present
+    REPORT_PERIOD=$(grep -m1 "Report Period:" "$INPUT_FILE" | sed 's/.*Report Period:\*\* //' || echo "")
+    GENERATED=$(grep -m1 "Generated:" "$INPUT_FILE" | sed 's/.*Generated:\*\* //' || echo "")
+
+    # Try XeLaTeX first (handles Unicode better and required for custom fonts)
+    if command -v xelatex &> /dev/null && [ -f "$TEMPLATE" ]; then
         pandoc "$INPUT_FILE" -o "$OUTPUT_PDF" \
             --pdf-engine=xelatex \
-            -V geometry:margin=1in \
-            -V documentclass=article \
+            --template="$TEMPLATE" \
+            --metadata title="Billing Summary Report" \
+            --metadata report-period="$REPORT_PERIOD" \
+            --metadata generated="$GENERATED" \
+            2>&1 | grep -E "(Error|Warning:)" | head -5
+    elif command -v xelatex &> /dev/null; then
+        # No custom template, use defaults with better settings
+        pandoc "$INPUT_FILE" -o "$OUTPUT_PDF" \
+            --pdf-engine=xelatex \
+            -V geometry:margin=0.75in \
+            -V mainfont="Arial" \
             -V fontsize=11pt \
             --metadata title="Billing Summary Report" \
-            2>&1 | tail -3
+            2>&1 | grep -E "(Error|Warning:)" | head -5
     else
         # Fall back to pdflatex
         pandoc "$INPUT_FILE" -o "$OUTPUT_PDF" \
             --pdf-engine=pdflatex \
-            -V geometry:margin=1in \
-            -V documentclass=article \
+            -V geometry:margin=0.75in \
             -V fontsize=11pt \
             --metadata title="Billing Summary Report" \
-            2>&1 | tail -3
+            2>&1 | grep -E "(Error|Warning:)" | head -5
     fi
 
     if [ -f "$OUTPUT_PDF" ]; then

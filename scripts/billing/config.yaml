@@ -28,7 +28,5 @@ remaining_budget:
 date_input_format: "%m/%d/%Y, %I:%M:%S %p %Z" # ClickUp format: "09/29/2025, 1:23:21 PM EDT"
 date_output_format: "%Y-%m-%d" # ISO format
 
-# Output settings
-output:
-  csv_filename_template: "billing_report_{month}_{year}.csv"
-  report_filename_template: "billing_summary_{month}_{year}.md"
+# Note: Output filenames are automatically generated based on actual date range in the data
+# Format: billing_report_YYYY-MM-DD_to_YYYY-MM-DD.csv

@@ -281,18 +281,19 @@ def main():
   # Calculate billing amounts
   df = calculate_billing_amounts(df, config)
 
-  # Generate output filenames with current month/year
-  current_month = datetime.now().strftime('%m')
-  current_year = datetime.now().strftime('%Y')
+  # Get actual date range from the data for filenames
+  min_date = df['Date'].min()
+  max_date = df['Date'].max()
 
-  csv_filename = config['output']['csv_filename_template'].format(
-    month=current_month,
-    year=current_year
-  )
-  report_filename = config['output']['report_filename_template'].format(
-    month=current_month,
-    year=current_year
-  )
+  # Convert to datetime to extract components
+  min_dt = pd.to_datetime(min_date)
+  max_dt = pd.to_datetime(max_date)
+
+  # Format date range for filename: YYYY-MM-DD_to_YYYY-MM-DD
+  date_range = f"{min_dt.strftime('%Y-%m-%d')}_to_{max_dt.strftime('%Y-%m-%d')}"
+
+  csv_filename = f"billing_report_{date_range}.csv"
+  report_filename = f"billing_summary_{date_range}.md"
 
   # Save cleaned CSV (without billing amounts - for accounting)
   output_csv = output_csv_dir / csv_filename
