@@ -1,7 +1,8 @@
 #!/bin/bash
 
-# Simple PDF export script for billing summaries
-# Uses pandoc to create a styled HTML that can be printed to PDF from browser
+# PDF export script for billing summaries
+# Attempts automated PDF generation with pandoc/pdflatex
+# Falls back to browser-based PDF creation if LaTeX not available
 
 if [ $# -eq 0 ]; then
     echo "Usage: $0 <markdown-file>"
@@ -11,7 +12,6 @@ fi
 
 INPUT_FILE="$1"
 OUTPUT_PDF="${INPUT_FILE%.md}.pdf"
-TEMP_HTML="/tmp/billing_summary_temp.html"
 
 # Check if pandoc is installed
 if ! command -v pandoc &> /dev/null; then
@@ -20,7 +20,38 @@ if ! command -v pandoc &> /dev/null; then
     exit 1
 fi
 
-# Convert markdown to HTML with styling
+# Check if pdflatex is available for automated PDF generation
+if command -v pdflatex &> /dev/null; then
+    echo "🔄 Generating PDF with pdflatex..."
+
+    # Generate PDF directly with pandoc
+    pandoc "$INPUT_FILE" -o "$OUTPUT_PDF" \
+        --pdf-engine=pdflatex \
+        -V geometry:margin=1in \
+        -V documentclass=article \
+        -V fontsize=11pt \
+        --metadata title="Billing Summary Report" \
+        2>&1 | grep -v "Missing character"
+
+    if [ -f "$OUTPUT_PDF" ]; then
+        echo "✅ PDF generated successfully: $OUTPUT_PDF"
+        exit 0
+    else
+        echo "❌ PDF generation failed, falling back to browser method..."
+    fi
+fi
+
+# Fallback: Browser-based PDF creation
+echo "⚠️  pdflatex not found - using browser method"
+echo ""
+echo "To install pdflatex for automated PDF generation:"
+echo "  brew install basictex"
+echo "  eval \"\$(/usr/libexec/path_helper)\""
+echo ""
+
+TEMP_HTML="/tmp/billing_summary_temp.html"
+
+# Convert markdown to styled HTML
 pandoc "$INPUT_FILE" -o "$TEMP_HTML" -s \
     --metadata title="Billing Summary Report" \
     --css <(cat <<'EOF'
@@ -77,12 +108,8 @@ EOF
 
 echo "✓ HTML generated at: $TEMP_HTML"
 echo ""
-echo "To create PDF:"
-echo "1. Open the HTML file in your browser:"
-echo "   open $TEMP_HTML"
-echo ""
-echo "2. Print to PDF (⌘+P) and save as:"
-echo "   $OUTPUT_PDF"
-echo ""
-echo "Or use this command to open directly:"
-echo "   open $TEMP_HTML"
+echo "📄 To create PDF:"
+echo "   1. Opening in browser..."
+open "$TEMP_HTML"
+echo "   2. Press ⌘+P to print"
+echo "   3. Save as: $OUTPUT_PDF"
