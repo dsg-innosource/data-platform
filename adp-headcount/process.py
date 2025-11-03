@@ -8,24 +8,24 @@ After successful processing, automatically archives the source file with timesta
 
 Usage:
     # Test mode: Process most recent file with DuckDB (safe testing)
-    python -m transformations.pipelines.adp_tenure_pipeline --test-mode
+    python adp-headcount/process.py --test-mode
 
     # Production: Process most recent file to PostgreSQL
-    python -m transformations.pipelines.adp_tenure_pipeline
+    python adp-headcount/process.py
 
     # Process specific file with default dates
-    python -m transformations.pipelines.adp_tenure_pipeline --file "Foreflow Tenure_JP.xls"
+    python adp-headcount/process.py --file "adp-headcount/input/Foreflow Tenure_JP.xls"
 
     # Process with custom dates
-    python -m transformations.pipelines.adp_tenure_pipeline --file "data.xls" --snapshot-date "2025-07-21" --report-date "2025-07-07"
+    python adp-headcount/process.py --file "adp-headcount/input/data.xls" --snapshot-date "2025-07-21" --report-date "2025-07-07"
 
     # Force reprocess (overwrite existing data)
-    python -m transformations.pipelines.adp_tenure_pipeline --force
+    python adp-headcount/process.py --force
 
     # Test with real file but DuckDB database
-    python -m transformations.pipelines.adp_tenure_pipeline --test-mode --file "raw/headcount/real_data.xls"
+    python adp-headcount/process.py --test-mode --file "adp-headcount/input/real_data.xls"
 
-Note: Processed files are automatically moved to raw/headcount/archive/ with format:
+Note: Processed files are automatically moved to adp-headcount/archive/ with format:
       filename_snapshot_YYYYMMDD_processed_YYYYMMDDHHMMSS.ext
 """
 
@@ -36,24 +36,24 @@ import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# Add the transformations directory to the Python path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add the modules directory to the Python path
+sys.path.insert(0, str(Path(__file__).parent))
 
-from adp.extract import read_adp_file, validate_adp_file_structure
-from adp.transform import clean_adp_data, validate_cleaned_data
-from adp.load import (
-    load_to_bronze_table, 
+from modules.extract import read_adp_file, validate_adp_file_structure
+from modules.transform import clean_adp_data, validate_cleaned_data
+from modules.load import (
+    load_to_bronze_table,
     execute_headcount_calculation,
     check_existing_data,
     delete_existing_data
 )
-from adp.config import get_logging_config
-from adp.date_utils import get_monday_dates, validate_monday_dates, format_business_period
+from modules.config import get_logging_config
+from modules.date_utils import get_monday_dates, validate_monday_dates, format_business_period
 
 
 def find_most_recent_headcount_file() -> Path:
     """
-    Find the most recent file in the raw/headcount/ directory.
+    Find the most recent file in the adp-headcount/input/ directory.
 
     Returns:
         Path to the most recent .xls or .xlsx file
@@ -61,18 +61,17 @@ def find_most_recent_headcount_file() -> Path:
     Raises:
         FileNotFoundError: If no files found in directory
     """
-    # Get the project root (two levels up from this file)
-    project_root = Path(__file__).parent.parent.parent
-    headcount_dir = project_root / 'raw' / 'headcount'
+    # Get the input directory (relative to this script)
+    input_dir = Path(__file__).parent / 'input'
 
-    if not headcount_dir.exists():
-        raise FileNotFoundError(f"Headcount directory not found: {headcount_dir}")
+    if not input_dir.exists():
+        raise FileNotFoundError(f"Input directory not found: {input_dir}")
 
     # Find all .xls and .xlsx files
-    excel_files = list(headcount_dir.glob('*.xls')) + list(headcount_dir.glob('*.xlsx'))
+    excel_files = list(input_dir.glob('*.xls')) + list(input_dir.glob('*.xlsx'))
 
     if not excel_files:
-        raise FileNotFoundError(f"No Excel files found in {headcount_dir}")
+        raise FileNotFoundError(f"No Excel files found in {input_dir}")
 
     # Get the most recently modified file
     most_recent = max(excel_files, key=lambda p: p.stat().st_mtime)
@@ -94,9 +93,8 @@ def archive_processed_file(file_path: Path, snapshot_date: str) -> Path:
     Naming format: filename_snapshot_YYYYMMDD_processed_YYYYMMDDHHMMSS.ext
     Example: Foreflow Tenure_snapshot_20251103_processed_20251103092815.xls
     """
-    # Get project root (two levels up from this file)
-    project_root = Path(__file__).parent.parent.parent
-    archive_dir = project_root / 'raw' / 'headcount' / 'archive'
+    # Get archive directory (relative to this script)
+    archive_dir = Path(__file__).parent / 'archive'
 
     # Ensure archive directory exists
     archive_dir.mkdir(parents=True, exist_ok=True)
@@ -127,9 +125,9 @@ def archive_processed_file(file_path: Path, snapshot_date: str) -> Path:
 def setup_logging():
     """Setup logging configuration."""
     log_config = get_logging_config()
-    
+
     # Create logs directory if it doesn't exist
-    log_file = Path(__file__).parent.parent / log_config.get('error_log_file', 'logs/pipeline_errors.md')
+    log_file = Path(__file__).parent / log_config.get('error_log_file', 'logs/pipeline_errors.md')
     log_file.parent.mkdir(parents=True, exist_ok=True)
     
     # Configure logging
@@ -143,19 +141,19 @@ def setup_logging():
     )
 
 
-# get_monday_dates function moved to adp.date_utils module
+# get_monday_dates function moved to modules.date_utils module
 
 
 def log_error_to_markdown(error_msg: str, context: str = ""):
     """
     Log error to markdown file.
-    
+
     Args:
         error_msg: Error message to log
         context: Additional context about the error
     """
     log_config = get_logging_config()
-    log_file = Path(__file__).parent.parent / log_config.get('error_log_file', 'logs/pipeline_errors.md')
+    log_file = Path(__file__).parent / log_config.get('error_log_file', 'logs/pipeline_errors.md')
     
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
@@ -178,7 +176,7 @@ def log_error_to_markdown(error_msg: str, context: str = ""):
 def main():
     """Main pipeline orchestration function."""
     parser = argparse.ArgumentParser(description='ADP Tenure Data Pipeline')
-    parser.add_argument('--file', help='Path to ADP Excel file. If not provided, uses most recent file in raw/headcount/')
+    parser.add_argument('--file', help='Path to ADP Excel file. If not provided, uses most recent file in adp-headcount/input/')
     parser.add_argument('--snapshot-date', help='Snapshot date (YYYY-MM-DD). Defaults to current Monday')
     parser.add_argument('--report-date', help='Report date (YYYY-MM-DD). Defaults to previous Monday')
     parser.add_argument('--force', action='store_true', help='Force reprocess (overwrite existing data)')

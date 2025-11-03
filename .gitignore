@@ -72,7 +72,16 @@ secrets.yml
 docs/exports/
 
 # ADP Headcount data - contains PII, do not commit
-raw/headcount/*.xls
-raw/headcount/*.xlsx
-raw/headcount/archive/*.xls
-raw/headcount/archive/*.xlsx
+adp-headcount/input/*.xls
+adp-headcount/input/*.xlsx
+adp-headcount/archive/*.xls
+adp-headcount/archive/*.xlsx
+adp-headcount/logs/
+adp-headcount/*.db
+adp-headcount/*.duckdb
+
+# Monthly Billing data - contains client/financial info, do not commit
+monthly-billing/input/*.csv
+monthly-billing/output/**/*
+!monthly-billing/output/**/.gitkeep
+monthly-billing/archive/

@@ -27,15 +27,41 @@ def parse_duration_to_decimal(duration_str):
   """
   Convert ClickUp duration format to decimal hours.
 
-  Examples:
-    '1:15' -> 1.25
+  Supports multiple formats:
+    '1:15:00' -> 1.25
     '2:30' -> 2.5
-    '0:45' -> 0.75
+    '2 h 30 m' -> 2.5
+    '1 h' -> 1.0
+    '45 m' -> 0.75
   """
   if pd.isna(duration_str) or duration_str == '':
     return 0.0
 
   duration_str = str(duration_str).strip()
+
+  # Handle new ClickUp format: "2 h 30 m" or "1 h" or "45 m"
+  if 'h' in duration_str or 'm' in duration_str:
+    hours = 0
+    minutes = 0
+
+    # Extract hours
+    if 'h' in duration_str:
+      h_parts = duration_str.split('h')
+      try:
+        hours = int(h_parts[0].strip())
+        duration_str = h_parts[1] if len(h_parts) > 1 else ''
+      except (ValueError, IndexError):
+        pass
+
+    # Extract minutes
+    if 'm' in duration_str:
+      m_parts = duration_str.split('m')
+      try:
+        minutes = int(m_parts[0].strip())
+      except (ValueError, IndexError):
+        pass
+
+    return round(hours + (minutes / 60), 2)
 
   # Handle format like "1:15:00" or "1:15"
   parts = duration_str.split(':')
@@ -120,7 +146,6 @@ def generate_summary_report(df, config, output_path):
   """Generate Markdown summary report."""
 
   rates = config['billing_rates']
-  remaining_budget = config['remaining_budget']
 
   # Calculate aggregations
   total_by_client = df.groupby('Client').agg({
@@ -171,45 +196,16 @@ def generate_summary_report(df, config, output_path):
 
 ## Summary by Client
 
-| Client | Billable Hours | Rate | Amount | Remaining Budget | Months Left |
-|--------|----------------|------|--------|------------------|-------------|
+| Client | Billable Hours | Rate | Amount |
+|--------|----------------|------|--------|
 """
-
-  # Track clients with low budget warnings
-  low_budget_warnings = []
 
   for client, row in total_by_client.iterrows():
     rate = rates.get(client, 0)
-    remaining = remaining_budget.get(client, 0)
     this_month_amount = row['Amount']
-    new_remaining = remaining - this_month_amount
-
-    # Calculate months remaining at current burn rate
-    if this_month_amount > 0:
-      months_left = new_remaining / this_month_amount
-      months_display = f"{months_left:.1f}"
-
-      # Flag if less than 2 months remaining
-      if months_left < 2.0:
-        months_display += " ⚠️"
-        low_budget_warnings.append({
-          'client': client,
-          'months_left': months_left,
-          'remaining': new_remaining
-        })
-    else:
-      months_display = "N/A"
-
-    report += f"| {client} | {row['Billable Hours']:.2f} | ${rate:.2f} | ${this_month_amount:.2f} | ${new_remaining:.2f} | {months_display} |\n"
+    report += f"| {client} | {row['Billable Hours']:.2f} | ${rate:.2f} | ${this_month_amount:.2f} |\n"
 
   report += f"\n**Grand Total:** {grand_total_hours:.2f} hours = ${grand_total_amount:.2f}\n\n"
-
-  # Add budget warnings if any
-  if low_budget_warnings:
-    report += "### ⚠️ Budget Alerts\n\n"
-    for warning in low_budget_warnings:
-      report += f"- **{warning['client']}**: Only {warning['months_left']:.1f} months of budget remaining (${warning['remaining']:.2f})\n"
-    report += "\n"
 
   report += """---
 
@@ -256,20 +252,19 @@ def main():
 
   # Set up paths
   script_dir = Path(__file__).parent
-  project_root = script_dir.parent.parent
-  raw_dir = project_root / 'raw' / 'clickup_billing'
-  output_csv_dir = project_root / 'output' / 'monthly_billing' / 'cleaned'
-  output_report_dir = project_root / 'output' / 'monthly_billing' / 'reports'
+  input_dir = script_dir / 'input'
+  output_csv_dir = script_dir / 'output' / 'cleaned'
+  output_report_dir = script_dir / 'output' / 'reports'
 
   # Load configuration
   config = load_config()
 
-  # Find most recent CSV in raw directory
-  csv_files = sorted(raw_dir.glob('*.csv'))
+  # Find most recent CSV in input directory
+  csv_files = sorted(input_dir.glob('*.csv'))
 
   if not csv_files:
-    print(f"Error: No CSV files found in {raw_dir}")
-    print("Please place your ClickUp export CSV in the raw/clickup_billing/ directory")
+    print(f"Error: No CSV files found in {input_dir}")
+    print("Please place your ClickUp export CSV in the monthly-billing/input/ directory")
     sys.exit(1)
 
   input_file = csv_files[-1]  # Use most recent

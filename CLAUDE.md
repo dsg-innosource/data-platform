@@ -1,45 +1,237 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code when working with code in this repository.
 
 ## Project Overview
 
-This is a data platform repository designed to serve as a centralized data warehouse and analytics platform. The project is currently in the initial setup phase, with the complete architecture defined in `data_platform_prompt.md`.
+This is a data platform repository containing automated data processes for business workflows. The repository is actively used for:
 
-## Planned Architecture
+- **ADP Headcount**: Weekly employee headcount data loading and warehouse management
+- **Monthly Billing**: ClickUp time tracking transformation to client billing reports
 
-The repository will follow this structure once fully implemented:
+Each process is self-contained with its own configuration, input/output handling, and documentation.
+
+## Current Architecture
+
 ```
 data-platform/
-├── scripts/           # Miscellaneous SQL scripts for reporting
-├── sqlmesh/          # SQL Mesh project (main data transformation engine)
-├── transformations/   # Custom transformation layer (alternative to AirByte)
-├── docs/             # Documentation
-├── tests/            # Shared testing utilities
-└── shared/           # Common macros, utilities
+├── adp-headcount/         # ADP employee headcount pipeline
+│   ├── input/            # Place .xls files here
+│   ├── archive/          # Processed files with timestamps
+│   ├── modules/          # extract.py, transform.py, load.py, etc.
+│   ├── process.py        # Main script (standardized name)
+│   └── config.yaml       # Database and pipeline config
+│
+├── monthly-billing/       # ClickUp billing process
+│   ├── input/            # Place ClickUp CSV exports here
+│   ├── output/           # Generated reports and CSVs
+│   ├── archive/          # Historical reports
+│   ├── process.py        # Main script (standardized name)
+│   └── config.yaml       # Rates, budgets, category mappings
+│
+├── docs/
+│   ├── guides/           # User guides (how to run processes)
+│   ├── technical/        # Technical documentation (architecture, config)
+│   └── database/         # Database schema documentation
+│
+├── sqlmesh/              # (Future) SQL Mesh transformations - not currently used
+├── venv/                 # Python virtual environment
+└── README.md             # Project overview and quick start
 ```
-
-## Development Setup Commands
-
-Since this is a new repository, the standard development workflow will involve:
-
-1. **Initial Setup** (from data_platform_prompt.md):
-   - Create Python virtual environment: `python -m venv venv`
-   - Activate environment: `source venv/bin/activate` (Unix) or `venv\Scripts\activate` (Windows)
-   - Install dependencies: `pip install -r requirements.txt` (once created)
-   - Initialize SQL Mesh project in `sqlmesh/` directory
-
-2. **SQL Mesh Commands** (once implemented):
-   - Plan changes: `sqlmesh plan`
-   - Apply changes: `sqlmesh apply`
-   - Run transformations: `sqlmesh run`
 
 ## Key Technologies
 
-- **SQL Mesh**: Primary data transformation and modeling framework
-- **Python**: For custom transformations and utilities
-- **SQL**: For data modeling and reporting scripts
+- **Python 3.8+**: Primary language for ETL processes
+- **Pandas**: Data transformation and manipulation
+- **PostgreSQL**: Production data warehouse
+- **DuckDB**: Local testing database (ADP process)
+- **SQLAlchemy**: Database connection management
 
-## Repository Status
+## Running Processes
 
-This repository is currently in the planning phase. The `data_platform_prompt.md` file contains the complete specification for setting up the initial structure, dependencies, and workflows. Future Claude instances should reference this file when implementing the planned architecture.
+### ADP Headcount (Weekly)
+
+```bash
+# Test mode (recommended first)
+python adp-headcount/process.py --test-mode
+
+# Production
+python adp-headcount/process.py
+
+# Custom dates
+python adp-headcount/process.py --snapshot-date "2025-11-04" --report-date "2025-10-28"
+```
+
+**Process flow**: Extract → Transform → Load (Bronze) → Calculate (Silver) → Archive
+
+### Monthly Billing
+
+```bash
+cd monthly-billing
+python process.py
+```
+
+**Process flow**: Extract → Transform → Calculate → Generate Reports
+
+## Documentation
+
+All documentation follows a split structure:
+
+- **User Guides** (`docs/guides/`): Simple step-by-step instructions for running processes
+- **Technical Docs** (`docs/technical/`): Comprehensive architecture, configuration, troubleshooting
+- **Database Docs** (`docs/database/`): Schema definitions, relationships, data dictionary
+
+**Always check both the user guide AND technical documentation** when working with a process.
+
+## Development Guidelines
+
+### Virtual Environment
+
+Always activate the virtual environment:
+
+```bash
+source venv/bin/activate
+```
+
+### Adding a New Process
+
+Follow the established pattern:
+
+1. Create process folder: `new-process/`
+2. Include subfolders: `input/`, `archive/`, `output/` (if needed), `modules/` (if complex)
+3. Main script: `process.py` (standardized name)
+4. Configuration: `config.yaml`
+5. Documentation:
+   - User guide: `docs/guides/New_Process.md`
+   - Technical docs: `docs/technical/New_Process.md`
+
+### Code Patterns
+
+- **Standardized naming**: All main entry points are named `process.py`
+- **Self-contained**: Each process folder contains everything needed
+- **Input/Archive pattern**: Files in `input/` are processed and moved to `archive/`
+- **Configuration-driven**: All settings in `config.yaml`, not hardcoded
+
+### Data Security
+
+**PII and sensitive data** is excluded from git via `.gitignore`:
+
+- `adp-headcount/input/` - Employee data
+- `adp-headcount/archive/` - Processed employee files
+- `monthly-billing/input/` - Time tracking data
+- `monthly-billing/output/` - Billing reports with rates
+- `monthly-billing/archive/` - Historical billing data
+
+**Never commit**:
+- Excel files from ADP
+- CSV files from ClickUp
+- Billing output files
+- Real database credentials
+
+## Database Schema
+
+### Bronze Layer
+- `bronze.adp_tenure_history` - Raw ADP employee data snapshots
+
+### Silver Layer
+- `silver.fact_active_headcount` - Aggregated headcount metrics by department
+
+See `docs/database/schemas.md` for complete schema documentation.
+
+## Testing
+
+### ADP Pipeline
+
+```bash
+# Test mode with DuckDB (safe, doesn't affect production)
+python adp-headcount/process.py --test-mode
+
+# Run test suite
+python adp-headcount/testing/run_tests.py
+```
+
+### Monthly Billing
+
+Currently tested manually by reviewing output files before sending to accounting.
+
+## Common Tasks
+
+### Updating Billing Rates
+
+Edit `monthly-billing/config.yaml`:
+
+```yaml
+billing:
+  rates:
+    client_name: 175.00  # Update rate here
+```
+
+### Adding a New Billing Client
+
+1. Add rate in `monthly-billing/config.yaml`
+2. Add budget tracking (optional)
+3. Add category mapping
+4. Create matching categories in ClickUp
+
+See `docs/technical/Billing_Process.md` for detailed instructions.
+
+### Modifying Database Schema
+
+1. Document change in `docs/database/schemas.md`
+2. Write migration SQL
+3. Test on dev/staging database
+4. Update pipeline code
+5. Execute migration on production
+
+## Troubleshooting
+
+### Module Not Found Errors
+
+```bash
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### Database Connection Errors
+
+- Check credentials in `config.yaml`
+- Verify network access
+- For ADP: Use `--test-mode` to test with DuckDB
+
+### File Not Found Errors
+
+- Verify files are in correct `input/` directory
+- Check file naming (ADP: .xls/.xlsx, Billing: .csv)
+
+See technical documentation for detailed troubleshooting.
+
+## Future Plans
+
+- **SQL Mesh Integration**: Advanced data transformations (currently in `sqlmesh/` but not active)
+- **Additional Processes**: More automated workflows following same self-contained pattern
+- **Shared Utilities**: Common code extracted to `shared/` folder
+- **Enhanced Testing**: Automated test suites for all processes
+
+## Contributing
+
+When making changes:
+
+1. Follow established patterns (self-contained processes, `process.py` naming)
+2. Update both user guide and technical documentation
+3. Test thoroughly (use test modes where available)
+4. Ensure sensitive data is excluded from git
+5. Update this file if architecture changes significantly
+
+## Important Files
+
+- `README.md` - Project overview and quick start
+- `docs/README.md` - Documentation organization guide
+- `docs/guides/` - User-facing process guides
+- `docs/technical/` - Technical implementation details
+- `docs/database/schemas.md` - Complete database schema documentation
+
+---
+
+**Repository Status**: Active (production use)
+**Last Updated**: 2025-11-03
+**Version**: 2.0.0
