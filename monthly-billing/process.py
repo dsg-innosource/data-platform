@@ -146,7 +146,6 @@ def generate_summary_report(df, config, output_path):
   """Generate Markdown summary report."""
 
   rates = config['billing_rates']
-  remaining_budget = config['remaining_budget']
 
   # Calculate aggregations
   total_by_client = df.groupby('Client').agg({
@@ -197,45 +196,16 @@ def generate_summary_report(df, config, output_path):
 
 ## Summary by Client
 
-| Client | Billable Hours | Rate | Amount | Remaining Budget | Months Left |
-|--------|----------------|------|--------|------------------|-------------|
+| Client | Billable Hours | Rate | Amount |
+|--------|----------------|------|--------|
 """
-
-  # Track clients with low budget warnings
-  low_budget_warnings = []
 
   for client, row in total_by_client.iterrows():
     rate = rates.get(client, 0)
-    remaining = remaining_budget.get(client, 0)
     this_month_amount = row['Amount']
-    new_remaining = remaining - this_month_amount
-
-    # Calculate months remaining at current burn rate
-    if this_month_amount > 0:
-      months_left = new_remaining / this_month_amount
-      months_display = f"{months_left:.1f}"
-
-      # Flag if less than 2 months remaining
-      if months_left < 2.0:
-        months_display += " ⚠️"
-        low_budget_warnings.append({
-          'client': client,
-          'months_left': months_left,
-          'remaining': new_remaining
-        })
-    else:
-      months_display = "N/A"
-
-    report += f"| {client} | {row['Billable Hours']:.2f} | ${rate:.2f} | ${this_month_amount:.2f} | ${new_remaining:.2f} | {months_display} |\n"
+    report += f"| {client} | {row['Billable Hours']:.2f} | ${rate:.2f} | ${this_month_amount:.2f} |\n"
 
   report += f"\n**Grand Total:** {grand_total_hours:.2f} hours = ${grand_total_amount:.2f}\n\n"
-
-  # Add budget warnings if any
-  if low_budget_warnings:
-    report += "### ⚠️ Budget Alerts\n\n"
-    for warning in low_budget_warnings:
-      report += f"- **{warning['client']}**: Only {warning['months_left']:.1f} months of budget remaining (${warning['remaining']:.2f})\n"
-    report += "\n"
 
   report += """---
 
