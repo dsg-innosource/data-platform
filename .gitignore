@@ -70,3 +70,9 @@ secrets.yml
 
 # Exports
 docs/exports/
+
+# ADP Headcount data - contains PII, do not commit
+raw/headcount/*.xls
+raw/headcount/*.xlsx
+raw/headcount/archive/*.xls
+raw/headcount/archive/*.xlsx

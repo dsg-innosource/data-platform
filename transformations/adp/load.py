@@ -16,36 +16,40 @@ def get_database_engine(config_file: str = "config.yaml"):
 def load_to_bronze_table(df: pd.DataFrame, config_file: str = "config.yaml") -> int:
     """
     Load cleaned ADP data to bronze.adp_tenure_history table.
-    
+
     Args:
         df: Cleaned DataFrame to load
-        
+
     Returns:
         Number of records inserted
-        
+
     Raises:
         Exception: If database operation fails
     """
     config = get_adp_config(config_file)
     table_name = config.get('bronze_table', 'bronze.adp_tenure_history')
-    
+
     engine = get_database_engine(config_file)
-    
+
     try:
         # Insert data to database
-        # Check if we're using DuckDB (doesn't support schemas the same way)
         if 'duckdb' in str(engine.url):
-            # For DuckDB, use simple table name without schema
-            table_name_simple = table_name.replace('bronze.', '').replace('silver.', '')
+            # DuckDB: Create bronze schema first
+            with engine.connect() as conn:
+                conn.execute(text("CREATE SCHEMA IF NOT EXISTS bronze;"))
+                conn.commit()
+
+            # For DuckDB, pandas to_sql() with schema parameter
             records_inserted = df.to_sql(
-                name=table_name_simple,
+                name='adp_tenure_history',
+                schema='bronze',
                 con=engine,
                 if_exists='append',
                 index=False,
                 method='multi'
             )
         else:
-            # For PostgreSQL, use schema
+            # PostgreSQL: use schema parameter
             records_inserted = df.to_sql(
                 name='adp_tenure_history',
                 schema='bronze',
@@ -65,17 +69,49 @@ def load_to_bronze_table(df: pd.DataFrame, config_file: str = "config.yaml") -> 
         engine.dispose()
 
 
+def ensure_silver_table_exists(config_file: str = "config.yaml"):
+    """Ensure the silver schema and table exist with the correct schema."""
+    config = get_adp_config(config_file)
+    silver_table = config.get('silver_table', 'silver.fact_active_headcount')
+    engine = get_database_engine(config_file)
+
+    # Create schema first
+    create_schema_sql = "CREATE SCHEMA IF NOT EXISTS silver;"
+
+    create_table_sql = f"""
+    CREATE TABLE IF NOT EXISTS {silver_table} (
+        department_number VARCHAR(6),
+        snapshot_date DATE NOT NULL,
+        report_date DATE,
+        active_count INTEGER NOT NULL,
+        created_at TIMESTAMP NOT NULL
+    );
+    """
+
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(create_schema_sql))
+            conn.execute(text(create_table_sql))
+            conn.commit()
+            logging.info(f"Ensured {silver_table} table exists")
+    except Exception as e:
+        logging.error(f"Failed to create {silver_table}: {str(e)}")
+        raise
+    finally:
+        engine.dispose()
+
+
 def execute_headcount_calculation(snapshot_date: str, report_date: str, config_file: str = "config.yaml") -> int:
     """
     Execute the headcount calculation SQL to populate silver.fact_active_headcount.
-    
+
     Args:
         snapshot_date: Date string in YYYY-MM-DD format
         report_date: Date string in YYYY-MM-DD format
-        
+
     Returns:
         Number of records inserted
-        
+
     Raises:
         Exception: If database operation fails
     """
@@ -83,18 +119,18 @@ def execute_headcount_calculation(snapshot_date: str, report_date: str, config_f
     bronze_table = config.get('bronze_table', 'bronze.adp_tenure_history')
     silver_table = config.get('silver_table', 'silver.fact_active_headcount')
     excluded_codes = config.get('excluded_client_codes', ['01100'])
-    
+
+    # Ensure silver table exists
+    ensure_silver_table_exists(config_file)
+
     # Convert excluded codes to SQL-compatible format
     excluded_codes_str = "', '".join(excluded_codes)
-    
-    # Handle DuckDB vs PostgreSQL table naming
+
     engine = get_database_engine(config_file)
-    if 'duckdb' in str(engine.url):
-        bronze_table_name = bronze_table.replace('bronze.', '').replace('silver.', '')
-        silver_table_name = silver_table.replace('bronze.', '').replace('silver.', '')
-    else:
-        bronze_table_name = bronze_table
-        silver_table_name = silver_table
+
+    # DuckDB supports schemas, so use full table names
+    bronze_table_name = bronze_table
+    silver_table_name = silver_table
     
     sql_query = f"""
     WITH daily_active AS (
@@ -157,31 +193,27 @@ def execute_headcount_calculation(snapshot_date: str, report_date: str, config_f
 def check_existing_data(snapshot_date: str, table_type: str = 'bronze', config_file: str = "config.yaml") -> int:
     """
     Check if data already exists for the given snapshot date.
-    
+
     Args:
         snapshot_date: Date string in YYYY-MM-DD format
         table_type: 'bronze' or 'silver'
-        
+
     Returns:
         Number of existing records for the snapshot date
     """
     config = get_adp_config(config_file)
-    
+
     if table_type == 'bronze':
         table_name = config.get('bronze_table', 'bronze.adp_tenure_history')
     else:
         table_name = config.get('silver_table', 'silver.fact_active_headcount')
-    
-    # Handle DuckDB vs PostgreSQL table naming
+
     engine = get_database_engine(config_file)
-    if 'duckdb' in str(engine.url):
-        table_name_clean = table_name.replace('bronze.', '').replace('silver.', '')
-    else:
-        table_name_clean = table_name
-    
+
+    # DuckDB supports schemas, so use the full table name
     sql_query = f"""
     SELECT COUNT(*) as record_count
-    FROM {table_name_clean}
+    FROM {table_name}
     WHERE snapshot_date = :snapshot_date;
     """
     
@@ -192,13 +224,18 @@ def check_existing_data(snapshot_date: str, table_type: str = 'bronze', config_f
                 {'snapshot_date': snapshot_date}
             )
             count = result.fetchone()[0]
-            
+
             logging.info(f"Found {count} existing records in {table_name} for {snapshot_date}")
             return count
-            
+
     except Exception as e:
-        logging.error(f"Failed to check existing data in {table_name}: {str(e)}")
-        raise
+        # If table doesn't exist yet, return 0
+        if 'does not exist' in str(e) or 'not found' in str(e).lower():
+            logging.info(f"Table {table_name} does not exist yet, returning 0")
+            return 0
+        else:
+            logging.error(f"Failed to check existing data in {table_name}: {str(e)}")
+            raise
     finally:
         engine.dispose()
 
@@ -206,30 +243,26 @@ def check_existing_data(snapshot_date: str, table_type: str = 'bronze', config_f
 def delete_existing_data(snapshot_date: str, table_type: str = 'bronze', config_file: str = "config.yaml") -> int:
     """
     Delete existing data for the given snapshot date.
-    
+
     Args:
         snapshot_date: Date string in YYYY-MM-DD format
         table_type: 'bronze' or 'silver'
-        
+
     Returns:
         Number of records deleted
     """
     config = get_adp_config(config_file)
-    
+
     if table_type == 'bronze':
         table_name = config.get('bronze_table', 'bronze.adp_tenure_history')
     else:
         table_name = config.get('silver_table', 'silver.fact_active_headcount')
-    
-    # Handle DuckDB vs PostgreSQL table naming
+
     engine = get_database_engine(config_file)
-    if 'duckdb' in str(engine.url):
-        table_name_clean = table_name.replace('bronze.', '').replace('silver.', '')
-    else:
-        table_name_clean = table_name
-    
+
+    # DuckDB supports schemas, so use the full table name
     sql_query = f"""
-    DELETE FROM {table_name_clean}
+    DELETE FROM {table_name}
     WHERE snapshot_date = :snapshot_date;
     """
     
