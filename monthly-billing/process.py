@@ -256,20 +256,19 @@ def main():
 
   # Set up paths
   script_dir = Path(__file__).parent
-  project_root = script_dir.parent.parent
-  raw_dir = project_root / 'raw' / 'clickup_billing'
-  output_csv_dir = project_root / 'output' / 'monthly_billing' / 'cleaned'
-  output_report_dir = project_root / 'output' / 'monthly_billing' / 'reports'
+  input_dir = script_dir / 'input'
+  output_csv_dir = script_dir / 'output' / 'cleaned'
+  output_report_dir = script_dir / 'output' / 'reports'
 
   # Load configuration
   config = load_config()
 
-  # Find most recent CSV in raw directory
-  csv_files = sorted(raw_dir.glob('*.csv'))
+  # Find most recent CSV in input directory
+  csv_files = sorted(input_dir.glob('*.csv'))
 
   if not csv_files:
-    print(f"Error: No CSV files found in {raw_dir}")
-    print("Please place your ClickUp export CSV in the raw/clickup_billing/ directory")
+    print(f"Error: No CSV files found in {input_dir}")
+    print("Please place your ClickUp export CSV in the monthly-billing/input/ directory")
     sys.exit(1)
 
   input_file = csv_files[-1]  # Use most recent
