@@ -27,15 +27,41 @@ def parse_duration_to_decimal(duration_str):
   """
   Convert ClickUp duration format to decimal hours.
 
-  Examples:
-    '1:15' -> 1.25
+  Supports multiple formats:
+    '1:15:00' -> 1.25
     '2:30' -> 2.5
-    '0:45' -> 0.75
+    '2 h 30 m' -> 2.5
+    '1 h' -> 1.0
+    '45 m' -> 0.75
   """
   if pd.isna(duration_str) or duration_str == '':
     return 0.0
 
   duration_str = str(duration_str).strip()
+
+  # Handle new ClickUp format: "2 h 30 m" or "1 h" or "45 m"
+  if 'h' in duration_str or 'm' in duration_str:
+    hours = 0
+    minutes = 0
+
+    # Extract hours
+    if 'h' in duration_str:
+      h_parts = duration_str.split('h')
+      try:
+        hours = int(h_parts[0].strip())
+        duration_str = h_parts[1] if len(h_parts) > 1 else ''
+      except (ValueError, IndexError):
+        pass
+
+    # Extract minutes
+    if 'm' in duration_str:
+      m_parts = duration_str.split('m')
+      try:
+        minutes = int(m_parts[0].strip())
+      except (ValueError, IndexError):
+        pass
+
+    return round(hours + (minutes / 60), 2)
 
   # Handle format like "1:15:00" or "1:15"
   parts = duration_str.split(':')
