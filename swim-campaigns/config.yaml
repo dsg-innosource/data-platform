@@ -1,0 +1,23 @@
+# Swim Campaigns Configuration
+
+database:
+  host: "${DB_HOST}"
+  port: "${DB_PORT}"
+  database: "${DB_NAME}"
+  username: "${DB_USERNAME}"
+  password: "${DB_PASSWORD}"
+  sslmode: "require"
+
+# Tables used for swim campaigns
+tables:
+  applicants: "bronze.portal_applicants"
+  resume_scores: "bronze.portal_resume_scores"
+  job_listings: "bronze.portal_applicant_job_listings"
+  statuses: "bronze.portal_applicant_statuses"
+  requisitions: "bronze.portal_requisitions"
+  adp_tenure: "bronze.adp_tenure_history"
+
+# Default output settings
+output:
+  format: "csv"
+  include_query: true  # Save the SQL query used

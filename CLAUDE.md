@@ -8,6 +8,7 @@ This is a data platform repository containing automated data processes for busin
 
 - **ADP Headcount**: Weekly employee headcount data loading and warehouse management
 - **Monthly Billing**: ClickUp time tracking transformation to client billing reports
+- **Swim Campaigns**: Targeted candidate searches for recruiter outreach
 
 Each process is self-contained with its own configuration, input/output handling, and documentation.
 
@@ -28,6 +29,12 @@ data-platform/
 │   ├── archive/          # Historical reports
 │   ├── process.py        # Main script (standardized name)
 │   └── config.yaml       # Rates, budgets, category mappings
+│
+├── swim-campaigns/        # Targeted candidate search campaigns
+│   ├── campaigns/        # One folder per campaign (audit trail)
+│   ├── docs/             # Swim campaign guide
+│   ├── process.py        # Main script
+│   └── config.yaml       # Database connection
 │
 ├── docs/
 │   ├── guides/           # User guides (how to run processes)
@@ -71,6 +78,21 @@ python process.py
 ```
 
 **Process flow**: Extract → Transform → Calculate → Generate Reports
+
+### Swim Campaigns
+
+```bash
+# List available campaigns
+python swim-campaigns/process.py --list
+
+# Run a specific campaign
+python swim-campaigns/process.py --campaign 2026-02-02-ads-order-processor
+
+# Dry run (generate SQL queries without executing)
+python swim-campaigns/process.py --campaign 2026-02-02-ads-order-processor --dry-run
+```
+
+**Process flow**: Load campaign config → Build SQL → Query database → Generate CSVs
 
 ## Documentation
 
@@ -120,6 +142,8 @@ Follow the established pattern:
 - `monthly-billing/input/` - Time tracking data
 - `monthly-billing/output/` - Billing reports with rates
 - `monthly-billing/archive/` - Historical billing data
+- `swim-campaigns/campaigns/*/*.csv` - Candidate contact lists
+- `swim-campaigns/campaigns/*/*.sql` - Generated queries
 
 **Never commit**:
 - Excel files from ADP

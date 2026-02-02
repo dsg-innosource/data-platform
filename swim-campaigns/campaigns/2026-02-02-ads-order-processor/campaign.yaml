@@ -1,0 +1,75 @@
+# Swim Campaign: ADS Order Processor Re-engagement
+# Created: 2026-02-02
+# Requestor: Casey
+
+name: "ADS Order Processor Re-engagement"
+client: "Advanced Drainage Systems"
+requisition_ids:
+  - 9152  # Current open req
+  - 8698  # Closed req
+
+filters:
+  exclude_hired: true  # Only include candidates NOT hired from these reqs
+
+searches:
+  - name: "columbus"
+    output_file: "columbus.csv"
+    location:
+      center: "Gahanna, OH"
+      radius_miles: 60
+      cities:
+        - gahanna
+        - columbus
+        - westerville
+        - newark
+        - zanesville
+        - lancaster
+        - circleville
+        - delaware
+        - marion
+        - mount vernon
+        - mansfield
+        - dublin
+        - hilliard
+        - grove city
+        - reynoldsburg
+        - pickerington
+    skills_preferred:  # Nice to have, not required
+      - "call center"
+      - "customer service"
+      - "order processing"
+
+  - name: "akron"
+    output_file: "akron.csv"
+    location:
+      center: "Akron, OH"
+      radius_miles: 30
+      cities:
+        - akron
+        - canton
+        - cuyahoga falls
+        - kent
+        - stow
+        - barberton
+        - massillon
+        - green
+        - hudson
+        - tallmadge
+        - wadsworth
+        - medina
+    skills_preferred:
+      - "call center"
+      - "customer service"
+      - "order processing"
+
+output_fields:
+  - applicant_id
+  - first_name
+  - last_name
+  - email
+  - phone
+  - location
+  - experience_summary
+  - last_applied_at
+  - status
+  - skills_match  # Flag if they have preferred skills

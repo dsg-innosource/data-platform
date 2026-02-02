@@ -7,6 +7,7 @@ A centralized data warehouse and analytics repository for processing business da
 This repository contains automated data processes for:
 - **ADP Headcount**: Weekly employee headcount data loading and analysis
 - **Monthly Billing**: ClickUp time tracking to client billing reports
+- **Swim Campaigns**: Targeted candidate searches for recruiter outreach
 
 Each process is self-contained with its own input/output folders, configuration, and documentation.
 
@@ -27,6 +28,12 @@ data-platform/
 │   ├── archive/          # Historical reports
 │   ├── process.py        # Main script
 │   └── config.yaml       # Rates, budgets, category mappings
+│
+├── swim-campaigns/        # Targeted candidate search campaigns
+│   ├── campaigns/        # Individual campaign folders (one per request)
+│   ├── docs/             # Swim campaign guide and reference
+│   ├── process.py        # Main script
+│   └── config.yaml       # Database connection settings
 │
 ├── docs/
 │   ├── guides/           # User guides (how to run processes)
@@ -64,11 +71,24 @@ cd monthly-billing
 python process.py
 ```
 
+**Swim Campaigns**
+```bash
+# List available campaigns
+python swim-campaigns/process.py --list
+
+# Run a campaign
+python swim-campaigns/process.py --campaign 2026-02-02-ads-order-processor
+
+# Dry run (generate queries without executing)
+python swim-campaigns/process.py --campaign 2026-02-02-ads-order-processor --dry-run
+```
+
 ## Documentation
 
 ### User Guides (How to Run)
 - **[ADP Headcount](docs/guides/ADP_Headcount.md)** - Step-by-step monthly workflow
 - **[Monthly Billing](docs/guides/Monthly_Billing.md)** - Step-by-step billing process
+- **[Swim Campaigns](swim-campaigns/docs/swim-campaign-guide.md)** - Targeted candidate searches
 
 ### Technical Documentation (How it Works)
 - **[ADP Pipeline](docs/technical/ADP_Pipeline.md)** - Architecture, configuration, troubleshooting

@@ -30,11 +30,6 @@ ENV/
 .venv/
 .env/
 
-# SQL Mesh
-.sqlmesh/
-sqlmesh_cache/
-.sqlmesh_cache/
-
 # IDE
 .vscode/
 .idea/
@@ -85,3 +80,9 @@ monthly-billing/input/*.csv
 monthly-billing/output/**/*
 !monthly-billing/output/**/.gitkeep
 monthly-billing/archive/
+
+# Swim Campaigns - contains PII (candidate contact info), do not commit
+swim-campaigns/campaigns/*/*.csv
+swim-campaigns/campaigns/*/*.sql
+swim-campaigns/output/
+swim-campaigns/cache/
