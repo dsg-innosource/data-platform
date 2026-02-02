@@ -1,12 +1,7 @@
 # Swim Campaigns Configuration
 
-database:
-  host: "${DB_HOST}"
-  port: "${DB_PORT}"
-  database: "${DB_NAME}"
-  username: "${DB_USERNAME}"
-  password: "${DB_PASSWORD}"
-  sslmode: "require"
+# Database connection is loaded from shared config
+# See: shared/database.yaml
 
 # Tables used for swim campaigns
 tables:

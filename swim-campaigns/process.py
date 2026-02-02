@@ -19,16 +19,31 @@ from datetime import datetime
 
 import pandas as pd
 import yaml
+from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
 
 def load_config():
-    """Load main configuration."""
+    """Load main configuration and shared database config."""
+    # Load environment variables from .env file
+    env_path = Path(__file__).parent.parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+
+    # Load process-specific config
     config_path = Path(__file__).parent / "config.yaml"
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
-    # Expand environment variables
+    # Load shared database config
+    shared_db_path = Path(__file__).parent.parent / "shared" / "database.yaml"
+    with open(shared_db_path) as f:
+        shared_config = yaml.safe_load(f)
+
+    # Merge database config
+    config["database"] = shared_config["database"]
+
+    # Expand environment variables in database config
     db = config["database"]
     for key in db:
         if isinstance(db[key], str) and db[key].startswith("${"):
@@ -72,7 +87,7 @@ def build_location_filter(cities):
     for city in cities:
         # Handle variations
         city_lower = city.lower().strip()
-        conditions.append(f"LOWER(rs.resume_only_current_location) LIKE '%{city_lower}%'")
+        conditions.append(f"LOWER(rd.location) LIKE '%{city_lower}%'")
     return " OR ".join(conditions)
 
 
@@ -81,7 +96,7 @@ def build_skills_filter(skills):
     conditions = []
     for skill in skills:
         skill_lower = skill.lower().strip()
-        conditions.append(f"LOWER(rs.resume_only_experience) LIKE '%{skill_lower}%'")
+        conditions.append(f"LOWER(rd.experience_summary) LIKE '%{skill_lower}%'")
     return " OR ".join(conditions)
 
 
@@ -138,12 +153,13 @@ applicant_details AS (
       {"AND ce.applicant_id IS NULL" if exclude_employed else "-- (not filtering employed)"}
 ),
 resume_data AS (
-    -- Get location and experience from parsed resumes
-    SELECT
+    -- Get location and experience from parsed resumes (most recent per applicant)
+    SELECT DISTINCT ON (rs.applicant_id)
         rs.applicant_id,
         rs.resume_only_current_location as location,
         rs.resume_only_experience as experience_summary
     FROM bronze.portal_resume_scores rs
+    ORDER BY rs.applicant_id, rs.created_at DESC
 )
 SELECT
     ad.applicant_id,
@@ -207,6 +223,162 @@ def run_search(engine, campaign, search, output_dir):
         return None
 
 
+def generate_summary_report(campaign, search_results, output_dir):
+    """Generate a markdown summary report for the campaign."""
+    report_lines = []
+
+    # Header
+    report_lines.append(f"# Swim Campaign Summary")
+    report_lines.append("")
+    report_lines.append(f"**Campaign:** {campaign['name']}")
+    report_lines.append(f"**Client:** {campaign['client']}")
+    report_lines.append(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    if campaign.get('requestor'):
+        report_lines.append(f"**Requestor:** {campaign.get('requestor')}")
+    report_lines.append("")
+    report_lines.append("---")
+    report_lines.append("")
+
+    # Search Criteria
+    report_lines.append("## Search Criteria")
+    report_lines.append("")
+    report_lines.append(f"**Requisition IDs:** {', '.join(str(r) for r in campaign['requisition_ids'])}")
+    report_lines.append("")
+
+    filters = campaign.get('filters', {})
+    if filters.get('exclude_hired', True):
+        report_lines.append("**Filters Applied:**")
+        report_lines.append("- Excluded currently employed candidates (via ADP)")
+        report_lines.append("- Required valid email and phone number")
+        report_lines.append("- Excluded deleted applicants")
+        report_lines.append("")
+
+    # Results Overview
+    report_lines.append("## Results Overview")
+    report_lines.append("")
+    report_lines.append("| Search | Location | Radius | Candidates | With Preferred Skills |")
+    report_lines.append("|--------|----------|--------|------------|----------------------|")
+
+    total_candidates = 0
+    total_with_skills = 0
+
+    for search in campaign['searches']:
+        name = search['name']
+        df = search_results.get(name)
+        if df is not None:
+            count = len(df)
+            skills_count = len(df[df['skills_match'] == 'Yes']) if 'skills_match' in df.columns else 0
+            pct = f"{(skills_count/count*100):.0f}%" if count > 0 else "N/A"
+            total_candidates += count
+            total_with_skills += skills_count
+            report_lines.append(
+                f"| {name.title()} | {search['location']['center']} | "
+                f"{search['location']['radius_miles']} mi | {count} | {skills_count} ({pct}) |"
+            )
+        else:
+            report_lines.append(f"| {name.title()} | {search['location']['center']} | {search['location']['radius_miles']} mi | ERROR | - |")
+
+    report_lines.append("")
+    total_pct = f"{(total_with_skills/total_candidates*100):.0f}%" if total_candidates > 0 else "N/A"
+    report_lines.append(f"**Total:** {total_candidates} candidates ({total_with_skills} with preferred skills, {total_pct})")
+    report_lines.append("")
+
+    # Skills Searched
+    report_lines.append("### Preferred Skills Flagged")
+    report_lines.append("")
+    all_skills = set()
+    for search in campaign['searches']:
+        all_skills.update(search.get('skills_preferred', []))
+    for skill in sorted(all_skills):
+        report_lines.append(f"- {skill}")
+    report_lines.append("")
+
+    # Top Candidates per Search
+    report_lines.append("---")
+    report_lines.append("")
+    report_lines.append("## Top Candidates Preview")
+    report_lines.append("")
+
+    for search in campaign['searches']:
+        name = search['name']
+        df = search_results.get(name)
+        if df is not None and len(df) > 0:
+            report_lines.append(f"### {name.title()} - Top 15")
+            report_lines.append("")
+
+            # Sort by skills match (Yes first), then by last_applied_at
+            df_sorted = df.copy()
+            df_sorted['_skills_sort'] = df_sorted['skills_match'].apply(lambda x: 0 if x == 'Yes' else 1)
+            df_sorted = df_sorted.sort_values(['_skills_sort', 'last_applied_at'], ascending=[True, False])
+
+            report_lines.append("| Name | Location | Skills Match | Last Applied | Status |")
+            report_lines.append("|------|----------|--------------|--------------|--------|")
+
+            for _, row in df_sorted.head(15).iterrows():
+                name_str = f"{row.get('first_name', '')} {row.get('last_name', '')}".strip()
+                location = str(row.get('location', ''))[:30] if pd.notna(row.get('location')) else 'Unknown'
+                skills = row.get('skills_match', 'No')
+                applied = row.get('last_applied_at', '')
+                if pd.notna(applied):
+                    applied = str(applied)[:10]
+                else:
+                    applied = 'Unknown'
+                status = str(row.get('status', ''))[:20] if pd.notna(row.get('status')) else ''
+                report_lines.append(f"| {name_str} | {location} | {skills} | {applied} | {status} |")
+
+            report_lines.append("")
+
+    # Data Notes
+    report_lines.append("---")
+    report_lines.append("")
+    report_lines.append("## Data Notes")
+    report_lines.append("")
+
+    for search in campaign['searches']:
+        name = search['name']
+        df = search_results.get(name)
+        if df is not None and len(df) > 0:
+            missing_location = df['location'].isna().sum() if 'location' in df.columns else 0
+            missing_experience = df['experience_summary'].isna().sum() if 'experience_summary' in df.columns else 0
+            if missing_location > 0 or missing_experience > 0:
+                report_lines.append(f"**{name.title()}:**")
+                if missing_location > 0:
+                    report_lines.append(f"- {missing_location} candidates missing location data")
+                if missing_experience > 0:
+                    report_lines.append(f"- {missing_experience} candidates missing resume/experience data")
+                report_lines.append("")
+
+    if not any(search_results.get(s['name']) is not None and
+               (search_results[s['name']]['location'].isna().any() or
+                search_results[s['name']]['experience_summary'].isna().any())
+               for s in campaign['searches'] if search_results.get(s['name']) is not None):
+        report_lines.append("No data quality issues detected.")
+        report_lines.append("")
+
+    # Deliverables
+    report_lines.append("---")
+    report_lines.append("")
+    report_lines.append("## Deliverables")
+    report_lines.append("")
+    report_lines.append("**CSV Files:**")
+    for search in campaign['searches']:
+        report_lines.append(f"- `{search['output_file']}`")
+    report_lines.append("")
+    report_lines.append("**SQL Queries:**")
+    for search in campaign['searches']:
+        report_lines.append(f"- `{search['name']}_query.sql`")
+    report_lines.append("")
+
+    # Write report
+    report_content = "\n".join(report_lines)
+    report_file = output_dir / "campaign_summary.md"
+    with open(report_file, "w") as f:
+        f.write(report_content)
+
+    print(f"\nSummary report saved: {report_file.name}")
+    return report_file
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run swim campaign searches")
     parser.add_argument("--campaign", help="Campaign folder name")
@@ -255,11 +427,16 @@ def main():
     print("\nConnecting to database...")
     engine = get_db_connection(config)
 
-    # Run searches
+    # Run searches and collect results
+    search_results = {}
     for search in campaign["searches"]:
         if args.search and search["name"] != args.search:
             continue
-        run_search(engine, campaign, search, output_dir)
+        df = run_search(engine, campaign, search, output_dir)
+        search_results[search["name"]] = df
+
+    # Generate summary report
+    generate_summary_report(campaign, search_results, output_dir)
 
     print("\n" + "=" * 50)
     print("Campaign complete!")

@@ -11,15 +11,24 @@ def load_config(config_file: str = "config.yaml") -> Dict[str, Any]:
     env_path = Path(__file__).parent.parent / ".env"
     if env_path.exists():
         load_dotenv(env_path)
-    
+
+    # Load process-specific config
     config_path = Path(__file__).parent.parent / config_file
-    
+
     if not config_path.exists():
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
-    
+
     with open(config_path, 'r') as file:
         config = yaml.safe_load(file)
-    
+
+    # Load shared database config (unless using test config which has its own db settings)
+    if config_file == "config.yaml":
+        shared_db_path = Path(__file__).parent.parent.parent / "shared" / "database.yaml"
+        if shared_db_path.exists():
+            with open(shared_db_path, 'r') as file:
+                shared_config = yaml.safe_load(file)
+            config["database"] = shared_config.get("database", {})
+
     # Substitute environment variables in config values
     config = _substitute_env_vars(config)
     return config
