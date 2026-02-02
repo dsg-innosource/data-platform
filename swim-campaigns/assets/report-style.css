@@ -1,0 +1,120 @@
+/* Swim Campaign Report - Modern Clean Style */
+
+@page {
+  size: letter;
+  margin: 0.75in;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 11pt;
+  line-height: 1.4;
+  color: #1a1a1a;
+  max-width: 100%;
+}
+
+h1 {
+  font-size: 22pt;
+  font-weight: 600;
+  color: #1e3a5f;
+  margin-bottom: 0.5em;
+  padding-bottom: 0.3em;
+  border-bottom: 3px solid #3b82f6;
+}
+
+h2 {
+  font-size: 13pt;
+  font-weight: 600;
+  color: #1e3a5f;
+  margin-top: 1.2em;
+  margin-bottom: 0.4em;
+  padding-bottom: 0.2em;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+h3 {
+  font-size: 11pt;
+  font-weight: 600;
+  color: #374151;
+  margin-top: 1em;
+  margin-bottom: 0.3em;
+}
+
+p {
+  margin: 0.4em 0;
+}
+
+strong {
+  color: #1e3a5f;
+}
+
+hr {
+  border: none;
+  border-top: 1px solid #e5e7eb;
+  margin: 1em 0;
+}
+
+/* Tables - smaller font, allow page breaks */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  font-size: 9pt;
+}
+
+thead {
+  background-color: #1e3a5f;
+  color: white;
+  display: table-header-group; /* Repeat header on each page */
+}
+
+th {
+  padding: 6px 8px;
+  text-align: left;
+  font-weight: 600;
+}
+
+td {
+  padding: 5px 8px;
+  border-bottom: 1px solid #e5e7eb;
+  vertical-align: top;
+}
+
+tbody tr:nth-child(even) {
+  background-color: #f9fafb;
+}
+
+/* Lists */
+ul {
+  margin: 0.4em 0;
+  padding-left: 1.5em;
+}
+
+li {
+  margin: 0.2em 0;
+}
+
+/* Code/monospace for file names */
+code {
+  font-family: "SF Mono", Monaco, "Cascadia Code", monospace;
+  font-size: 8pt;
+  background-color: #f3f4f6;
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: #1e3a5f;
+}
+
+/* Print optimizations */
+@media print {
+  h2, h3 {
+    break-after: avoid;
+  }
+
+  thead {
+    display: table-header-group;
+  }
+
+  tr {
+    break-inside: avoid;
+  }
+}

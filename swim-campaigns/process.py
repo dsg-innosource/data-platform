@@ -230,11 +230,11 @@ def generate_summary_report(campaign, search_results, output_dir):
     # Header
     report_lines.append(f"# Swim Campaign Summary")
     report_lines.append("")
-    report_lines.append(f"**Campaign:** {campaign['name']}")
-    report_lines.append(f"**Client:** {campaign['client']}")
-    report_lines.append(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    report_lines.append(f"**Campaign:** {campaign['name']}  ")
+    report_lines.append(f"**Client:** {campaign['client']}  ")
+    report_lines.append(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}  ")
     if campaign.get('requestor'):
-        report_lines.append(f"**Requestor:** {campaign.get('requestor')}")
+        report_lines.append(f"**Requestor:** {campaign.get('requestor')}  ")
     report_lines.append("")
     report_lines.append("---")
     report_lines.append("")
