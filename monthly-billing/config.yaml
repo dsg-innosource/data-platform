@@ -16,8 +16,8 @@ category_transforms:
 
 # Billing rate card (hourly rates by client)
 billing_rates:
-  "Job News": 175.00
-  "Tri County Home Care": 150.00
+  "Job News": 250.00
+  "Tri County Home Care": 200.00
 
 # Remaining budget $$ by client (update monthly)
 remaining_budget:
