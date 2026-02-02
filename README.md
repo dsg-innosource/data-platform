@@ -33,7 +33,6 @@ data-platform/
 │   ├── technical/        # Technical documentation (architecture, config)
 │   └── database/         # Database schema documentation
 │
-├── sqlmesh/              # (Future) SQL Mesh transformations
 └── venv/                 # Python virtual environment
 ```
 
@@ -244,7 +243,6 @@ See technical documentation for detailed troubleshooting.
 
 ## Future Plans
 
-- **SQL Mesh Integration**: Advanced data transformations (currently in `sqlmesh/` but not active)
 - **Additional Processes**: More automated data workflows following same pattern
 - **Shared Utilities**: Common code for all processes in `shared/`
 - **Enhanced Testing**: Automated test suites for all processes
