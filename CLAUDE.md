@@ -9,6 +9,7 @@ This is a data platform repository containing automated data processes for busin
 - **ADP Headcount**: Weekly employee headcount data loading and warehouse management
 - **Monthly Billing**: ClickUp time tracking transformation to client billing reports
 - **Swim Campaigns**: Targeted candidate searches for recruiter outreach
+- **Resume Fraud Detection**: Automated detection of fraudulent resumes via employment history matching, multi-resume divergence, and summary fingerprinting
 
 Each process is self-contained with its own configuration, input/output handling, and documentation.
 
@@ -35,6 +36,13 @@ data-platform/
 │   ├── docs/             # Swim campaign guide
 │   ├── process.py        # Main script
 │   └── config.yaml       # Database connection
+│
+├── resume-fraud-detection/ # Automated resume fraud detection
+│   ├── assets/           # Report styling (CSS)
+│   ├── output/           # Date-stamped detection results
+│   ├── reference/        # Known fraud patterns documentation
+│   ├── process.py        # Main script
+│   └── config.yaml       # Thresholds, lookback windows, table refs
 │
 ├── docs/
 │   ├── guides/           # User guides (how to run processes)
@@ -94,6 +102,29 @@ python swim-campaigns/process.py --campaign 2026-02-02-ads-order-processor --dry
 
 **Process flow**: Load campaign config → Build SQL → Query database → Generate CSVs
 
+### Resume Fraud Detection (Weekly)
+
+```bash
+# Run all detection methods
+python resume-fraud-detection/process.py
+
+# Dry run (generate SQL queries without executing)
+python resume-fraud-detection/process.py --dry-run
+
+# Override lookback window (days) for all methods
+python resume-fraud-detection/process.py --lookback 60
+
+# Also generate PDF report
+python resume-fraud-detection/process.py --pdf
+```
+
+**Process flow**: Build queries → Run 3 detection methods → Classify signals → Generate report
+
+**Detection methods:**
+1. Employment history fingerprinting (structured fields + resume text)
+2. Multi-resume divergence (same email, different resumes)
+3. Professional summary matching (secondary/corroborating signal only)
+
 ## Documentation
 
 All documentation follows a split structure:
@@ -144,6 +175,7 @@ Follow the established pattern:
 - `monthly-billing/archive/` - Historical billing data
 - `swim-campaigns/campaigns/*/*.csv` - Candidate contact lists
 - `swim-campaigns/campaigns/*/*.sql` - Generated queries
+- `resume-fraud-detection/output/` - Fraud detection results with applicant PII
 
 **Never commit**:
 - Excel files from ADP
@@ -255,5 +287,5 @@ When making changes:
 ---
 
 **Repository Status**: Active (production use)
-**Last Updated**: 2025-11-03
+**Last Updated**: 2026-02-04
 **Version**: 2.0.0

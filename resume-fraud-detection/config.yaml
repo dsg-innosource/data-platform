@@ -1,0 +1,40 @@
+# Resume Fraud Detection Configuration
+
+# Database connection is loaded from shared config
+# See: shared/database.yaml
+
+# Tables used for fraud detection
+tables:
+  applicants: "bronze.portal_applicants"
+  applications: "bronze.portal_applicant_applications"
+  documents: "bronze.portal_applicant_documents"
+  resume_scores: "bronze.portal_resume_scores"
+  statuses: "bronze.portal_applicant_statuses"
+
+# Detection method configuration
+detection:
+  # Method 1: Employment History Matching
+  employment_history:
+    # Minimum unique applicants sharing identical fingerprint to flag
+    threshold: 3
+    # Default lookback in days
+    lookback_days: 30
+
+  # Method 2: Multi-Resume Divergence
+  multi_resume:
+    # Wider lookback window to catch patterns over time
+    lookback_days: 90
+    # Minimum distinct resumes to trigger detection
+    min_distinct_resumes: 2
+
+  # Method 3: Professional Summary Matching (secondary signal only)
+  professional_summary:
+    # Higher threshold since this is corroborating evidence only
+    threshold: 5
+    # Default lookback in days
+    lookback_days: 30
+
+# Output settings
+output:
+  format: "csv"
+  include_query: true  # Save the SQL queries used

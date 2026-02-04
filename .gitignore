@@ -86,3 +86,6 @@ swim-campaigns/campaigns/*/*.csv
 swim-campaigns/campaigns/*/*.sql
 swim-campaigns/output/
 swim-campaigns/cache/
+
+# Resume Fraud Detection - contains PII (applicant info), do not commit
+resume-fraud-detection/output/
