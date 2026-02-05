@@ -109,16 +109,13 @@ def describe_date_filter(config, lookback_key):
 def build_employment_history_query(config):
     """Build SQL for employment history fingerprint matching.
 
-    Runs two sub-approaches:
-    - Option A: Hash structured employer fields from applications table
-    - Option B: Hash experience text from documents/resume scores
+    Hashes the AI-extracted work experience section from parsed resumes.
     Groups by hash and flags when 3+ unique applicants share the same fingerprint.
     """
     tables = config["tables"]
     detection = config["detection"]["employment_history"]
     threshold = detection["threshold"]
     date_desc = describe_date_filter(config, "employment_history")
-    app_date_filter = build_date_filter(config, "app.created_at", "employment_history")
     doc_date_filter = build_date_filter(config, "d.created_at", "employment_history")
 
     query = f"""
@@ -126,57 +123,10 @@ def build_employment_history_query(config):
 -- Generated: {datetime.now().isoformat()}
 -- Threshold: {threshold}+ unique applicants with identical employment fingerprint
 -- {date_desc}
+-- Method: MD5 hash of AI-extracted work experience from resume_scores table
 
 WITH
--- Option A: Structured fields from applications table
-employment_fingerprints AS (
-    SELECT
-        a.id AS applicant_id,
-        a.first_name,
-        a.last_name,
-        a.email,
-        MD5(LOWER(CONCAT_WS('|',
-            COALESCE(NULLIF(TRIM(app.previous_employer_1_name), ''), 'none'),
-            COALESCE(app.previous_employer_1_start_date::text, ''),
-            COALESCE(app.previous_employer_1_end_date::text, ''),
-            COALESCE(NULLIF(TRIM(app.previous_employer_2_name), ''), 'none'),
-            COALESCE(app.previous_employer_2_start_date::text, ''),
-            COALESCE(app.previous_employer_2_end_date::text, ''),
-            COALESCE(NULLIF(TRIM(app.previous_employer_3_name), ''), 'none'),
-            COALESCE(app.previous_employer_3_start_date::text, ''),
-            COALESCE(app.previous_employer_3_end_date::text, '')
-        ))) AS employment_hash,
-        CONCAT_WS(' | ',
-            CASE WHEN app.previous_employer_1_name IS NOT NULL
-                      AND TRIM(app.previous_employer_1_name) != ''
-                 THEN app.previous_employer_1_name || ' (' ||
-                      COALESCE(app.previous_employer_1_start_date::text, '?') || ' to ' ||
-                      COALESCE(app.previous_employer_1_end_date::text, 'present') || ')'
-            END,
-            CASE WHEN app.previous_employer_2_name IS NOT NULL
-                      AND TRIM(app.previous_employer_2_name) != ''
-                 THEN app.previous_employer_2_name || ' (' ||
-                      COALESCE(app.previous_employer_2_start_date::text, '?') || ' to ' ||
-                      COALESCE(app.previous_employer_2_end_date::text, 'present') || ')'
-            END,
-            CASE WHEN app.previous_employer_3_name IS NOT NULL
-                      AND TRIM(app.previous_employer_3_name) != ''
-                 THEN app.previous_employer_3_name || ' (' ||
-                      COALESCE(app.previous_employer_3_start_date::text, '?') || ' to ' ||
-                      COALESCE(app.previous_employer_3_end_date::text, 'present') || ')'
-            END
-        ) AS employment_summary,
-        'structured_fields' AS hash_source,
-        app.created_at
-    FROM {tables['applicants']} a
-    JOIN {tables['applications']} app ON a.id = app.applicant_id
-    WHERE {app_date_filter}
-      AND a.deleted_at IS NULL
-      AND app.previous_employer_1_name IS NOT NULL
-      AND TRIM(app.previous_employer_1_name) != ''
-),
-
--- Option B: Experience text from resume scores
+-- Experience text fingerprints from resume scores
 experience_fingerprints AS (
     SELECT
         a.id AS applicant_id,
@@ -191,11 +141,10 @@ experience_fingerprints AS (
             LEFT(rs.resume_only_experience, 300),
             'No experience extracted'
         ) AS employment_summary,
-        'experience_text' AS hash_source,
         d.created_at
     FROM {tables['applicants']} a
     JOIN {tables['documents']} d ON a.id = d.applicant_id
-    LEFT JOIN {tables['resume_scores']} rs ON a.id = rs.applicant_id
+    JOIN {tables['resume_scores']} rs ON a.id = rs.applicant_id
     WHERE {doc_date_filter}
       AND a.deleted_at IS NULL
       AND d.is_resume = TRUE
@@ -205,40 +154,29 @@ experience_fingerprints AS (
       AND LENGTH(TRIM(rs.resume_only_experience)) > 100
 ),
 
--- Combine both approaches
-all_fingerprints AS (
-    SELECT * FROM employment_fingerprints
-    UNION ALL
-    SELECT * FROM experience_fingerprints
-),
-
--- Find suspicious groups
+-- Find suspicious groups (3+ applicants with identical experience fingerprint)
 suspicious_groups AS (
     SELECT
         employment_hash,
-        hash_source,
         COUNT(DISTINCT applicant_id) AS ring_size,
         MIN(employment_summary) AS employment_summary
-    FROM all_fingerprints
-    GROUP BY employment_hash, hash_source
+    FROM experience_fingerprints
+    GROUP BY employment_hash
     HAVING COUNT(DISTINCT applicant_id) >= {threshold}
 )
 
 SELECT
-    af.applicant_id,
-    af.first_name,
-    af.last_name,
-    af.email,
-    af.employment_hash,
-    af.hash_source,
+    ef.applicant_id,
+    ef.first_name,
+    ef.last_name,
+    ef.email,
+    ef.employment_hash,
     sg.ring_size,
     sg.employment_summary,
-    af.created_at
+    ef.created_at
 FROM suspicious_groups sg
-JOIN all_fingerprints af
-    ON sg.employment_hash = af.employment_hash
-    AND sg.hash_source = af.hash_source
-ORDER BY sg.ring_size DESC, sg.employment_hash, af.last_name;
+JOIN experience_fingerprints ef ON sg.employment_hash = ef.employment_hash
+ORDER BY sg.ring_size DESC, sg.employment_hash, ef.last_name;
 """
     return query
 
@@ -466,9 +404,8 @@ def build_detail_string(applicant_id, emp_df, multi_df, summary_df):
         rows = emp_df[emp_df["applicant_id"] == applicant_id]
         if not rows.empty:
             row = rows.iloc[0]
-            source = row.get("hash_source", "unknown")
             ring = row.get("ring_size", "?")
-            details.append(f"Employment match ({source}, ring={ring})")
+            details.append(f"Employment match (ring={ring})")
 
     if multi_df is not None and "applicant_ids" in multi_df.columns:
         # Multi-resume uses array columns, check if applicant_id appears
@@ -596,10 +533,7 @@ def generate_report(config, results, method_results, output_dir):
     report_lines.append("")
     report_lines.append("### Method 1: Employment History Matching (PRIMARY)")
     report_lines.append("")
-    report_lines.append("Identifies groups of applicants with identical employment fingerprints. Two approaches are combined:")
-    report_lines.append("")
-    report_lines.append("- **Structured Fields**: Hashes the employer names and dates from application form fields (`previous_employer_1_name`, start/end dates, etc.)")
-    report_lines.append("- **Resume Text**: Hashes the AI-extracted work experience section from parsed resumes")
+    report_lines.append("Identifies groups of applicants with identical employment fingerprints by hashing the AI-extracted work experience section from parsed resumes (`resume_only_experience` field).")
     report_lines.append("")
     report_lines.append(f"**Threshold**: {detection['employment_history']['threshold']}+ unique applicants sharing identical fingerprint = flagged")
     report_lines.append("")
@@ -672,7 +606,7 @@ def generate_report(config, results, method_results, output_dir):
     emp_df = method_results.get("employment_history")
     if emp_df is not None and len(emp_df) > 0:
         # Count unique rings
-        unique_rings = emp_df.groupby(["employment_hash", "hash_source"]).agg(
+        unique_rings = emp_df.groupby("employment_hash").agg(
             ring_size=("applicant_id", "nunique")
         ).reset_index()
         report_lines.append(f"**Suspicious groups found:** {len(unique_rings)}")
@@ -683,16 +617,15 @@ def generate_report(config, results, method_results, output_dir):
         # Top rings table
         report_lines.append("### Flagged Applicants")
         report_lines.append("")
-        report_lines.append("| Name | Email | Hash Source | Ring Size | Employment Summary |")
-        report_lines.append("|------|-------|-------------|-----------|-------------------|")
+        report_lines.append("| Name | Email | Ring Size | Employment Summary |")
+        report_lines.append("|------|-------|-----------|-------------------|")
 
         for _, row in emp_df.head(50).iterrows():
             name = f"{row.get('first_name', '')} {row.get('last_name', '')}".strip()
             email = str(row.get("email", ""))[:30]
-            source = row.get("hash_source", "")
             ring = row.get("ring_size", "")
             summary = str(row.get("employment_summary", ""))[:60]
-            report_lines.append(f"| {name} | {email} | {source} | {ring} | {summary} |")
+            report_lines.append(f"| {name} | {email} | {ring} | {summary} |")
 
         report_lines.append("")
     else:
