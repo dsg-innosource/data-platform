@@ -1,0 +1,112 @@
+# =============================================================================
+# Metabase Base Model Catalog
+# =============================================================================
+# Maps Metabase base models to their version-controlled SQL files, Data Product
+# IDs, and source tables. This is the single source of truth for what lives in
+# the "00 BASE MODELS" collection in Metabase.
+#
+# query_type:
+#   native  = SQL written directly in Metabase (SQL stored in models/ dir)
+#   builder = Metabase UI Builder query (no SQL file; table reference only)
+# =============================================================================
+
+models:
+
+  - name: DP-000 Department Mapping
+    metabase_card_id: 704
+    metabase_url: https://innosource.metabaseapp.com/model/704-dp000-department-mapping
+    dp_id: DP-000
+    query_type: builder
+    source_table: bronze.portal_departments
+    description: >
+      Master reference linking ADP department codes to business attributes
+      (client, service type, location). Used across reports and dashboards
+      to categorize and filter employee data. Built with Metabase UI Builder
+      — no SQL file.
+
+  - name: DP-001 Requisition Application Progress
+    metabase_card_id: 305
+    metabase_url: https://innosource.metabaseapp.com/model/305-requisition-application-progress
+    dp_id: DP-001
+    query_type: native
+    sql_file: models/dp001_requisition_application_progress.sql
+    description: >
+      Applications with related requisitions and their progression through
+      the hiring process. Tracks each stage (view, phone screen, interview,
+      offer, hire, rejection, fall-off) with recruiter attribution and
+      AI scoring categories.
+    source_tables:
+      - bronze.portal_requisitions
+      - bronze.portal_clients
+      - bronze.portal_requisition_statistics
+      - bronze.portal_applicants
+      - bronze.portal_jakib_results
+      - bronze.portal_resume_scores
+      - bronze.portal_applicant_job_listings
+      - bronze.portal_users
+      - bronze.portal_applicant_views
+      - bronze.portal_applicant_job_offer_responses
+      - bronze.portal_applicant_fall_offs
+
+  - name: DP-005 ADP Tenure
+    metabase_card_id: 331
+    metabase_url: https://innosource.metabaseapp.com/model/331-adp-tenure
+    dp_id: DP-005
+    query_type: native
+    sql_file: models/dp005_adp_tenure.sql
+    description: >
+      Latest snapshot from ADP tenure history. Used to calculate net gain,
+      termination reasons, and active headcount. Filters to the most recent
+      snapshot_date only.
+    source_tables:
+      - bronze.adp_tenure_history
+
+  - name: AI Tenure Detail
+    metabase_card_id: 288
+    metabase_url: https://innosource.metabaseapp.com/model/288-ai-tenure-detail
+    dp_id: null  # Pending formal assessment
+    query_type: native
+    sql_file: models/ai_tenure_detail.sql
+    depends_on:
+      - DP-000  # Uses department code mapping for authoritative client resolution
+    description: >
+      Combines ADP employment data with AI assessment scores using a
+      multi-pass matching strategy (Pass 1: direct match, Pass 2: pipeline
+      temporal match, Pass 3: rehire temporal match). Provides AI scoring
+      categories (GREEN/YELLOW/RED) and tenure calculations.
+    source_tables:
+      - bronze.adp_tenure_history
+      - bronze.portal_departments
+      - bronze.portal_clients
+      - bronze.portal_requisitions
+      - bronze.portal_jakib_results
+      - bronze.portal_resume_scores
+
+  - name: Applicant Sources
+    metabase_card_id: 506
+    metabase_url: https://innosource.metabaseapp.com/model/506-applicant-sources
+    dp_id: null  # Pending formal assessment
+    query_type: native
+    sql_file: models/applicant_sources.sql
+    description: >
+      Base model for the source of applications (Indeed, LinkedIn, etc).
+      Joins applications to their source channel with applicant context.
+    source_tables:
+      - bronze.portal_applicant_job_listings
+      - bronze.portal_requisitions
+      - bronze.portal_applicant_sources
+      - bronze.portal_applicants
+
+  - name: Requisitions
+    metabase_card_id: 545
+    metabase_url: https://innosource.metabaseapp.com/model/545-requisitions
+    dp_id: null  # Pending formal assessment
+    query_type: native
+    sql_file: models/requisitions.sql
+    description: >
+      Base requisition model with details including client, AI usage flags,
+      requisition type, and hired count per requisition.
+    source_tables:
+      - bronze.portal_requisitions
+      - bronze.portal_dashboard_lines_of_business
+      - bronze.portal_applicant_job_offer_responses
