@@ -1,291 +1,133 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code when working with code in this repository.
+Context for AI assistants working on this repository. For the human-readable project overview, see [README.md](README.md).
 
-## Project Overview
+## What This Repo Is
 
-This is a data platform repository containing automated data processes for business workflows. The repository is actively used for:
+This is InnoSource's data platform — the central repository for data governance, analytics, and data pipeline work. It's owned by a small data governance/analytics team (3 people, led by Sean Beal) that follows a **Data as a Product** methodology.
 
-- **ADP Headcount**: Weekly employee headcount data loading and warehouse management
-- **Monthly Billing**: ClickUp time tracking transformation to client billing reports
-- **Swim Campaigns**: Targeted candidate searches for recruiter outreach
-- **Resume Fraud Detection**: Automated detection of fraudulent resumes via employment history matching, multi-resume divergence, and summary fingerprinting
+The repo contains four types of things:
 
-Each process is self-contained with its own configuration, input/output handling, and documentation.
+1. **Data processes** — Python ETL pipelines in self-contained folders
+2. **Metabase SQL** — Version-controlled SQL for foundational Metabase models
+3. **Silver layer transforms** — SQL scripts for bronze → silver transformations
+4. **Dagster orchestration** — Pipeline definitions, schedules, and sensors
 
-## Current Architecture
+## Architecture Decisions (Current)
+
+These decisions were made in February 2026. See [REPO_RECOMMENDATIONS.md](REPO_RECOMMENDATIONS.md) for full rationale.
+
+| Decision | Choice | Notes |
+|----------|--------|-------|
+| Orchestration | Dagster Cloud (Solo Plan, $10/month) | Manages scheduling, monitoring, alerting. Auto-deploys from GitHub. |
+| Transformation layer | Plain SQL scripts | In `transforms/`. Will migrate to dbt when we have 10+ transforms. |
+| Data warehouse | PostgreSQL on Digital Ocean | Bronze/silver/gold schema architecture. |
+| ELT | Airbyte → PostgreSQL bronze | Airbyte handles extract-load. We handle transform. |
+| Visualization | Metabase | Connected to PostgreSQL. Base model SQL is version-controlled here. |
+| Project management | ClickUp | Data Governance docs live in ClickUp, not this repo. |
+
+### Future migration path
+
+Dagster was chosen partly because of its first-class `dagster-dbt` integration. When transform count exceeds ~10, the team plans to adopt dbt Core. SQL files in `transforms/` are written as standalone scripts specifically so they can become dbt models with minimal changes. Dagster remains the orchestrator regardless.
+
+## Code Patterns to Follow
+
+### Process folders
+
+Every data process follows this pattern:
 
 ```
-data-platform/
-├── adp-headcount/         # ADP employee headcount pipeline
-│   ├── input/            # Place .xls files here
-│   ├── archive/          # Processed files with timestamps
-│   ├── modules/          # extract.py, transform.py, load.py, etc.
-│   ├── process.py        # Main script (standardized name)
-│   └── config.yaml       # Database and pipeline config
-│
-├── monthly-billing/       # ClickUp billing process
-│   ├── input/            # Place ClickUp CSV exports here
-│   ├── output/           # Generated reports and CSVs
-│   ├── archive/          # Historical reports
-│   ├── process.py        # Main script (standardized name)
-│   └── config.yaml       # Rates, budgets, category mappings
-│
-├── swim-campaigns/        # Targeted candidate search campaigns
-│   ├── campaigns/        # One folder per campaign (audit trail)
-│   ├── docs/             # Swim campaign guide
-│   ├── process.py        # Main script
-│   └── config.yaml       # Database connection
-│
-├── resume-fraud-detection/ # Automated resume fraud detection
-│   ├── assets/           # Report styling (CSS)
-│   ├── output/           # Date-stamped detection results
-│   ├── reference/        # Known fraud patterns documentation
-│   ├── process.py        # Main script
-│   └── config.yaml       # Thresholds, lookback windows, table refs
-│
-├── docs/
-│   ├── guides/           # User guides (how to run processes)
-│   ├── technical/        # Technical documentation (architecture, config)
-│   └── database/         # Database schema documentation
-│
-├── venv/                 # Python virtual environment
-└── README.md             # Project overview and quick start
+process-name/
+├── input/              # Raw data files (gitignored)
+├── archive/            # Processed files (gitignored)
+├── output/             # Generated outputs (gitignored if contains PII)
+├── modules/            # Supporting code (if complex)
+├── process.py          # Main entry point (ALWAYS this name)
+└── config.yaml         # All settings (NEVER hardcode)
 ```
 
-## Key Technologies
+When creating a new process, follow this exactly. The `process.py` naming convention is important — it's how both humans and Dagster find the entry point.
 
-- **Python 3.8+**: Primary language for ETL processes
-- **Pandas**: Data transformation and manipulation
-- **PostgreSQL**: Production data warehouse
-- **DuckDB**: Local testing database (ADP process)
-- **SQLAlchemy**: Database connection management
+### SQL files
 
-## Running Processes
+SQL transforms go in `transforms/bronze_to_silver/` as standalone `.sql` files. Do NOT embed SQL in Python unless the transform requires Python logic (pandas, API calls, etc.). Standalone SQL files are portable and will eventually become dbt models.
 
-### ADP Headcount (Weekly)
+Metabase model SQL goes in `metabase/models/`. These are the source-of-truth definitions for Metabase base models. When modifying, update both the `.sql` file and the Metabase model.
 
-```bash
-# Test mode (recommended first)
-python adp-headcount/process.py --test-mode
+### Configuration
 
-# Production
-python adp-headcount/process.py
+All configuration is in `config.yaml` files per process, or environment variables for secrets. Database credentials come from `.env` (local) or Dagster Cloud secrets (production). Never hardcode credentials.
 
-# Custom dates
-python adp-headcount/process.py --snapshot-date "2025-11-04" --report-date "2025-10-28"
-```
+## What NOT to Break
 
-**Process flow**: Extract → Transform → Load (Bronze) → Calculate (Silver) → Archive
+### PII protection
 
-### Monthly Billing
+These paths contain personally identifiable information and are gitignored. Never remove these gitignore rules:
 
-```bash
-cd monthly-billing
-python process.py
-```
+- `adp-headcount/input/` — Employee data (Excel)
+- `adp-headcount/archive/` — Processed employee files
+- `monthly-billing/input/` — Time tracking data with names
+- `monthly-billing/output/` — Billing reports with rates
+- `monthly-billing/archive/` — Historical billing data
+- `swim-campaigns/campaigns/*/*.csv` — Candidate contact lists
+- `swim-campaigns/campaigns/*/*.sql` — Generated queries with PII
+- `resume-fraud-detection/output/` — Fraud results with applicant PII
 
-**Process flow**: Extract → Transform → Calculate → Generate Reports
+### Database schema
 
-### Swim Campaigns
+The data warehouse uses a medallion architecture:
 
-```bash
-# List available campaigns
-python swim-campaigns/process.py --list
+- **Bronze** (`bronze.*`): Raw data from Airbyte and ETL processes. Do not transform in place.
+- **Silver** (`silver.*`): Cleaned, standardized data. Created by transforms in this repo.
+- **Gold** (`gold.*`): Business-ready aggregates and models. Used by Metabase dashboards.
 
-# Run a specific campaign
-python swim-campaigns/process.py --campaign 2026-02-02-ads-order-processor
+Key tables:
+- `bronze.adp_tenure_history` — Raw ADP employee snapshots (written by adp-headcount)
+- `silver.fact_active_headcount` — Aggregated headcount metrics (calculated during ADP load)
+- `silver.department_mapping` — Master department reference (DP-000)
 
-# Dry run (generate SQL queries without executing)
-python swim-campaigns/process.py --campaign 2026-02-02-ads-order-processor --dry-run
-```
+See `docs/database/schemas.md` for the full schema.
 
-**Process flow**: Load campaign config → Build SQL → Query database → Generate CSVs
+### Existing process behavior
 
-### Resume Fraud Detection (Weekly)
+The four existing processes (adp-headcount, monthly-billing, swim-campaigns, resume-fraud-detection) are in production use. Changes to their `process.py` or `config.yaml` files should be tested thoroughly. ADP has a `--test-mode` flag that uses DuckDB instead of production PostgreSQL.
 
-```bash
-# Run all detection methods
-python resume-fraud-detection/process.py
+## Data Product Registry
 
-# Dry run (generate SQL queries without executing)
-python resume-fraud-detection/process.py --dry-run
+Data products that have been formally assessed get a DP-ID (e.g., DP-000, DP-001). The canonical registry is in ClickUp ([Data Product Registry](https://app.clickup.com/8673329/v/dc/88p1h-7051)), with a local mapping in `metabase/catalog.yaml`.
 
-# Override lookback window (days) for all methods
-python resume-fraud-detection/process.py --lookback 60
+Not all models have DP-IDs yet. Only assign one after the model has been assessed against the Data as a Product framework (clear purpose, defined users, ownership, documentation, trust/reliability, measurable value, lifecycle management).
 
-# Also generate PDF report
-python resume-fraud-detection/process.py --pdf
-```
+## Dagster Orchestration
 
-**Process flow**: Build queries → Run 3 detection methods → Classify signals → Generate report
+Pipeline definitions are in `orchestration/`. The project deploys automatically to Dagster Cloud when code is pushed to `main`.
 
-**Detection methods:**
-1. Employment history fingerprinting (structured fields + resume text)
-2. Multi-resume divergence (same email, different resumes)
-3. Professional summary matching (secondary/corroborating signal only)
+Key concepts:
+- **Assets** are defined in `orchestration/orchestration/assets/` — each represents a data product that Dagster materializes
+- **Schedules** are in `schedules.py` — cron-based triggers for asset materialization
+- **Sensors** are in `sensors.py` — event-driven triggers (future: Airbyte sync completion, file drops)
+- **Resources** are in `resources/` — shared connections (PostgreSQL)
 
-## Documentation
+When adding a new scheduled pipeline, create an asset function, add it to the appropriate group, and add/update a schedule.
 
-All documentation follows a split structure:
+## Key Files
 
-- **User Guides** (`docs/guides/`): Simple step-by-step instructions for running processes
-- **Technical Docs** (`docs/technical/`): Comprehensive architecture, configuration, troubleshooting
-- **Database Docs** (`docs/database/`): Schema definitions, relationships, data dictionary
+| File | Purpose |
+|------|---------|
+| `REPO_RECOMMENDATIONS.md` | Full reorganization plan with rationale for all decisions |
+| `metabase/catalog.yaml` | Maps DP-IDs to Metabase card IDs and SQL files |
+| `shared/database.yaml` | Shared database connection configuration |
+| `.env` | Local environment variables (gitignored) |
+| `requirements.txt` | Python dependencies |
 
-**Always check both the user guide AND technical documentation** when working with a process.
+## ClickUp Integration
 
-## Development Guidelines
+Project tracking is in ClickUp space "DSG", list "DATA GOVERNANCE". Key tasks:
+- **DSG-3308**: Data Platform Repo Reorganization (this work)
+- **DSG-3234**: Department Mapping Matrix process
 
-### Virtual Environment
-
-Always activate the virtual environment:
-
-```bash
-source venv/bin/activate
-```
-
-### Adding a New Process
-
-Follow the established pattern:
-
-1. Create process folder: `new-process/`
-2. Include subfolders: `input/`, `archive/`, `output/` (if needed), `modules/` (if complex)
-3. Main script: `process.py` (standardized name)
-4. Configuration: `config.yaml`
-5. Documentation:
-   - User guide: `docs/guides/New_Process.md`
-   - Technical docs: `docs/technical/New_Process.md`
-
-### Code Patterns
-
-- **Standardized naming**: All main entry points are named `process.py`
-- **Self-contained**: Each process folder contains everything needed
-- **Input/Archive pattern**: Files in `input/` are processed and moved to `archive/`
-- **Configuration-driven**: All settings in `config.yaml`, not hardcoded
-
-### Data Security
-
-**PII and sensitive data** is excluded from git via `.gitignore`:
-
-- `adp-headcount/input/` - Employee data
-- `adp-headcount/archive/` - Processed employee files
-- `monthly-billing/input/` - Time tracking data
-- `monthly-billing/output/` - Billing reports with rates
-- `monthly-billing/archive/` - Historical billing data
-- `swim-campaigns/campaigns/*/*.csv` - Candidate contact lists
-- `swim-campaigns/campaigns/*/*.sql` - Generated queries
-- `resume-fraud-detection/output/` - Fraud detection results with applicant PII
-
-**Never commit**:
-- Excel files from ADP
-- CSV files from ClickUp
-- Billing output files
-- Real database credentials
-
-## Database Schema
-
-### Bronze Layer
-- `bronze.adp_tenure_history` - Raw ADP employee data snapshots
-
-### Silver Layer
-- `silver.fact_active_headcount` - Aggregated headcount metrics by department
-
-See `docs/database/schemas.md` for complete schema documentation.
-
-## Testing
-
-### ADP Pipeline
-
-```bash
-# Test mode with DuckDB (safe, doesn't affect production)
-python adp-headcount/process.py --test-mode
-
-# Run test suite
-python adp-headcount/testing/run_tests.py
-```
-
-### Monthly Billing
-
-Currently tested manually by reviewing output files before sending to accounting.
-
-## Common Tasks
-
-### Updating Billing Rates
-
-Edit `monthly-billing/config.yaml`:
-
-```yaml
-billing:
-  rates:
-    client_name: 175.00  # Update rate here
-```
-
-### Adding a New Billing Client
-
-1. Add rate in `monthly-billing/config.yaml`
-2. Add budget tracking (optional)
-3. Add category mapping
-4. Create matching categories in ClickUp
-
-See `docs/technical/Billing_Process.md` for detailed instructions.
-
-### Modifying Database Schema
-
-1. Document change in `docs/database/schemas.md`
-2. Write migration SQL
-3. Test on dev/staging database
-4. Update pipeline code
-5. Execute migration on production
-
-## Troubleshooting
-
-### Module Not Found Errors
-
-```bash
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-### Database Connection Errors
-
-- Check credentials in `config.yaml`
-- Verify network access
-- For ADP: Use `--test-mode` to test with DuckDB
-
-### File Not Found Errors
-
-- Verify files are in correct `input/` directory
-- Check file naming (ADP: .xls/.xlsx, Billing: .csv)
-
-See technical documentation for detailed troubleshooting.
-
-## Future Plans
-
-- **Additional Processes**: More automated workflows following same self-contained pattern
-- **Shared Utilities**: Common code extracted to `shared/` folder
-- **Enhanced Testing**: Automated test suites for all processes
-
-## Contributing
-
-When making changes:
-
-1. Follow established patterns (self-contained processes, `process.py` naming)
-2. Update both user guide and technical documentation
-3. Test thoroughly (use test modes where available)
-4. Ensure sensitive data is excluded from git
-5. Update this file if architecture changes significantly
-
-## Important Files
-
-- `README.md` - Project overview and quick start
-- `docs/README.md` - Documentation organization guide
-- `docs/guides/` - User-facing process guides
-- `docs/technical/` - Technical implementation details
-- `docs/database/schemas.md` - Complete database schema documentation
+Data Governance documentation lives in ClickUp Docs (doc ID: 88p1h-7051), NOT in this repo. Don't move governance docs into the repo — ClickUp is where the team collaborates on those.
 
 ---
 
-**Repository Status**: Active (production use)
-**Last Updated**: 2026-02-04
-**Version**: 2.0.0
+**Last Updated:** February 2026
