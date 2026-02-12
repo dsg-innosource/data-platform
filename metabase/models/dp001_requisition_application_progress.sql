@@ -1,9 +1,15 @@
 -- -------------------------------------------------------------------------------------------
--- Requisition Application Progress with Recruiter Names
+-- DP001 - Requisition Application Progress with Recruiter Names
 -- -------------------------------------------------------------------------------------------
 -- METABASE URL: https://innosource.metabaseapp.com/model/305-requisition-application-progress
--- UPDATED: 2025-12-31 - Added fall-off tracking (fall_off_date, fall_off_reason, fall_off_recruiter_name)
--- UPDATED: 2025-12-31 - Added is_resume_only flag (Resume Only Scoring requisitions per Data Governance)
+--
+-- CHANGE LOG:
+-- 2025-12-31 - Added fall-off tracking (fall_off_date, fall_off_reason, fall_off_recruiter_name)
+-- 2025-12-31 - Added is_resume_only flag (Resume Only Scoring requisitions per Data Governance)
+-- 2026-01-16 - Added First Contact SMS tracking (first_contact_sms_date, first_contact_sms_recruiter_name)
+--              Source: bronze.portal_applicant_texts (Sense SMS system)
+--              Logic: First outbound SMS sent AFTER application, within 30-day window
+--              Reference: DSG-3013, ClickUp Doc 88p1h-8871
 -- -------------------------------------------------------------------------------------------
 with reqs as (
   select
@@ -16,9 +22,14 @@ with reqs as (
     -- Resume Only Requisition: use_jakib_ai=FALSE, ai_context empty, ai_scoring_context populated
     CASE
       WHEN r.use_jakib_ai = FALSE
-        AND (r.ai_context IS NULL OR TRIM(r.ai_context) = '')
-        AND (r.ai_scoring_context IS NOT NULL AND TRIM(r.ai_scoring_context) != '')
-      THEN TRUE
+      AND (
+        r.ai_context IS NULL
+        OR TRIM(r.ai_context) = ''
+      )
+      AND (
+        r.ai_scoring_context IS NOT NULL
+        AND TRIM(r.ai_scoring_context) != ''
+      ) THEN TRUE
       ELSE FALSE
     END as is_resume_only,
     case
@@ -88,6 +99,47 @@ recruiters as (
     concat(p.first_name, ' ', p.last_name) as recruiter_name
   from
     bronze.portal_users p
+),
+-- -------------------------------------------------------------------------------------------
+-- First Contact SMS: First outbound text message sent to applicant AFTER their application
+-- -------------------------------------------------------------------------------------------
+-- Attribution Logic:
+--   For each applicant-requisition pair, find the FIRST outbound SMS that occurred
+--   AFTER that specific application. This ensures each application gets its own
+--   first contact tracking, even if an applicant applied to multiple requisitions.
+--
+-- Time Window:
+--   SMS must occur within 30 days of the application to be attributed to that
+--   requisition. Texts sent more than 30 days after application are not linked.
+--
+-- Source:
+--   bronze.portal_applicant_texts (Sense SMS system logs)
+--   - status = 'Delivered' indicates outbound messages from recruiters
+--   - from_user links to portal_users for recruiter identification
+--
+-- Note:
+--   Includes both individual and bulk/template texts. All outbound SMS represents
+--   legitimate recruiter outreach regardless of whether templates were used.
+-- -------------------------------------------------------------------------------------------
+first_contact_sms as (
+  select distinct on (jl.applicant_id, jl.requisition_id)
+    jl.requisition_id,
+    jl.applicant_id,
+    rc.recruiter_name as first_contact_sms_recruiter_name,
+    t.created_at as first_contact_sms_date
+  from
+    bronze.portal_applicant_job_listings jl
+    inner join reqs r on jl.requisition_id = r.requisition_id
+    inner join bronze.portal_applicant_texts t
+      on jl.applicant_id = t.applicant_id
+      and t.status = 'Delivered'  -- Outbound SMS only
+      and t.created_at > jl.created_at  -- SMS must be AFTER application
+      and t.created_at <= jl.created_at + interval '30 days'  -- Within 30-day window
+    left join recruiters rc on t.from_user = rc.recruiter_id
+  order by
+    jl.applicant_id,
+    jl.requisition_id,
+    t.created_at  -- First SMS for this applicant-requisition pair
 ),
 applicant_views as (
   select
@@ -259,8 +311,7 @@ offers_accepted as (
 ),
 fall_offs as (
   select
-    distinct on (fo.requisition_id, fo.applicant_id)
-    fo.requisition_id,
+    distinct on (fo.requisition_id, fo.applicant_id) fo.requisition_id,
     fo.applicant_id,
     rc.recruiter_name as fall_off_recruiter_name,
     fo.reason as fall_off_reason,
@@ -316,6 +367,8 @@ final as (
     av.first_view_recruiter_name,
     ra.score_created_at,
     ra.resume_only_score_created_at,
+    sms.first_contact_sms_date,
+    sms.first_contact_sms_recruiter_name,
     ps.first_phone_screen_date,
     ps.phone_screen_recruiter_name,
     i.first_interview_date,
@@ -349,6 +402,8 @@ final as (
     and ra.applicant_id = ad.applicant_id
     left join applicant_views av on ra.requisition_id = av.requisition_id
     and ra.applicant_id = av.applicant_id
+    left join first_contact_sms sms on ra.requisition_id = sms.requisition_id
+    and ra.applicant_id = sms.applicant_id
     left join phone_screens ps on ra.requisition_id = ps.requisition_id
     and ra.applicant_id = ps.applicant_id
     left join inno_interviews i on ra.requisition_id = i.requisition_id
@@ -366,7 +421,4 @@ final as (
     left join fall_offs fo on ra.requisition_id = fo.requisition_id
     and ra.applicant_id = fo.applicant_id
 )
-select
-  *
-from
-  final f
+select * from final
