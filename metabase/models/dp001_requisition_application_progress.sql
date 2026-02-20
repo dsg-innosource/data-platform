@@ -10,6 +10,8 @@
 --              Source: bronze.portal_applicant_texts (Sense SMS system)
 --              Logic: First outbound SMS sent AFTER application, within 30-day window
 --              Reference: DSG-3013, ClickUp Doc 88p1h-8871
+-- 2026-02-20 - Added source_name field from earliest application to specific requisition
+--              Reference: DSG-3891
 -- -------------------------------------------------------------------------------------------
 with reqs as (
   select
@@ -92,6 +94,21 @@ application_dates as (
   group by
     jl.applicant_id,
     jl.requisition_id
+),
+application_sources as (
+  select
+    distinct on (jl.applicant_id, jl.requisition_id)
+    jl.applicant_id,
+    jl.requisition_id,
+    COALESCE(s.name, 'Unknown') as source_name
+  from
+    bronze.portal_applicant_job_listings jl
+    inner join reqs r on jl.requisition_id = r.requisition_id
+    left join bronze.portal_applicant_sources s on jl.applicant_source_id = s.id
+  order by
+    jl.applicant_id,
+    jl.requisition_id,
+    jl.created_at  -- Earliest application first
 ),
 recruiters as (
   select
@@ -344,6 +361,7 @@ final as (
     ra.first_name || ' ' || ra.last_name as applicant_name,
     ra.email,
     ra.phone_number,
+    asrc.source_name,
     ra.jakib_score,
     ra.conversation_type,
     ra.resume_only_score,
@@ -400,6 +418,8 @@ final as (
     req_applicants ra
     inner join application_dates ad on ra.requisition_id = ad.requisition_id
     and ra.applicant_id = ad.applicant_id
+    left join application_sources asrc on ra.requisition_id = asrc.requisition_id
+    and ra.applicant_id = asrc.applicant_id
     left join applicant_views av on ra.requisition_id = av.requisition_id
     and ra.applicant_id = av.applicant_id
     left join first_contact_sms sms on ra.requisition_id = sms.requisition_id
