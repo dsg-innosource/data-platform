@@ -1,0 +1,105 @@
+# Swim Campaign: Nationwide Higher-Level Pipeline
+# Created: 2026-02-24
+# Requestor: Whitney
+
+name: "Nationwide Higher-Level Pipeline"
+client: "Nationwide"
+requestor: "Whitney"
+requisition_ids:
+  - 8696  # Higher-Level Pipeline
+
+filters:
+  exclude_hired: true
+
+searches:
+  - name: "ohio"
+    output_file: "ohio.csv"
+    location:
+      center: "Ohio (statewide)"
+      radius_miles: 0
+      cities:
+        # Central Ohio
+        - columbus
+        - gahanna
+        - westerville
+        - dublin
+        - hilliard
+        - grove city
+        - reynoldsburg
+        - pickerington
+        - delaware
+        - newark
+        - zanesville
+        - lancaster
+        - circleville
+        - marion
+        - mount vernon
+        - mansfield
+        # Northeast Ohio
+        - cleveland
+        - akron
+        - canton
+        - youngstown
+        - cuyahoga falls
+        - kent
+        - stow
+        - medina
+        - elyria
+        - lorain
+        - mentor
+        - parma
+        - lakewood
+        - strongsville
+        - hudson
+        - wooster
+        - massillon
+        # Southwest Ohio
+        - cincinnati
+        - dayton
+        - springfield
+        - hamilton
+        - middletown
+        - kettering
+        - fairborn
+        - beavercreek
+        - mason
+        - west chester
+        - fairfield
+        - xenia
+        # Northwest Ohio
+        - toledo
+        - findlay
+        - lima
+        - sandusky
+        - fremont
+        - bowling green
+        # Other Ohio
+        - ohio
+    skills_required:  # At least one must match (filters results)
+      - "workday recruiting"
+      - "workday"
+      - "jira"
+      - "uat"
+      - "user acceptance testing"
+      - "process documentation"
+      - "visio"
+      - "figma"
+    skills_preferred:  # Flagged in output but doesn't filter
+      - "workday recruiting"
+      - "jira"
+      - "uat"
+      - "process documentation"
+      - "visio"
+      - "figma"
+
+output_fields:
+  - applicant_id
+  - first_name
+  - last_name
+  - email
+  - phone
+  - location
+  - experience_summary
+  - last_applied_at
+  - status
+  - skills_match

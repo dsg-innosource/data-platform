@@ -109,6 +109,18 @@ def build_query(campaign, search, config):
     # Check if we should exclude employed candidates
     exclude_employed = campaign.get("filters", {}).get("exclude_hired", True)
 
+    # Check for time window filter
+    applied_within_days = campaign.get("filters", {}).get("applied_within_days")
+    applied_within_clause = ""
+    if applied_within_days:
+        applied_within_clause = f"AND a.last_applied_at >= CURRENT_DATE - INTERVAL '{applied_within_days} days'"
+
+    # Check for required skills filter (at least one must match)
+    skills_required = search.get("skills_required", [])
+    skills_required_filter = ""
+    if skills_required:
+        skills_required_filter = f"AND ({build_skills_filter(skills_required)})"
+
     # Build the query
     query = f"""
 -- Swim Campaign: {campaign['name']}
@@ -116,6 +128,8 @@ def build_query(campaign, search, config):
 -- Generated: {datetime.now().isoformat()}
 -- Requisitions: {req_ids}
 -- Exclude currently employed: {exclude_employed}
+-- Applied within days: {applied_within_days or 'no limit'}
+-- Skills required (at least one): {', '.join(skills_required) if skills_required else 'none'}
 
 WITH campaign_applicants AS (
     -- Get all applicants who applied to the target requisitions
@@ -151,6 +165,8 @@ applicant_details AS (
       AND (a.cell_phone IS NOT NULL OR a.phone_number IS NOT NULL)
       -- Exclude anyone currently employed (if filter enabled)
       {"AND ce.applicant_id IS NULL" if exclude_employed else "-- (not filtering employed)"}
+      -- Time window filter
+      {applied_within_clause}
 ),
 resume_data AS (
     -- Get location and experience from parsed resumes (most recent per applicant)
@@ -180,6 +196,8 @@ LEFT JOIN resume_data rd ON ad.applicant_id = rd.applicant_id
 WHERE (
     {location_filter}
 )
+-- Required skills filter (at least one must match)
+{skills_required_filter}
 ORDER BY
     ad.last_applied_at DESC,
     ad.last_name,
@@ -311,11 +329,12 @@ def generate_summary_report(campaign, search_results, output_dir):
             df_sorted['_skills_sort'] = df_sorted['skills_match'].apply(lambda x: 0 if x == 'Yes' else 1)
             df_sorted = df_sorted.sort_values(['_skills_sort', 'last_applied_at'], ascending=[True, False])
 
-            report_lines.append("| Name | Location | Skills Match | Last Applied | Status |")
-            report_lines.append("|------|----------|--------------|--------------|--------|")
+            report_lines.append("| Name | Email | Location | Skills Match | Last Applied | Status |")
+            report_lines.append("|------|-------|----------|--------------|--------------|--------|")
 
             for _, row in df_sorted.head(15).iterrows():
                 name_str = f"{row.get('first_name', '')} {row.get('last_name', '')}".strip()
+                email = str(row.get('email', '')) if pd.notna(row.get('email')) else ''
                 location = str(row.get('location', ''))[:30] if pd.notna(row.get('location')) else 'Unknown'
                 skills = row.get('skills_match', 'No')
                 applied = row.get('last_applied_at', '')
@@ -324,7 +343,7 @@ def generate_summary_report(campaign, search_results, output_dir):
                 else:
                     applied = 'Unknown'
                 status = str(row.get('status', ''))[:20] if pd.notna(row.get('status')) else ''
-                report_lines.append(f"| {name_str} | {location} | {skills} | {applied} | {status} |")
+                report_lines.append(f"| {name_str} | {email} | {location} | {skills} | {applied} | {status} |")
 
             report_lines.append("")
 
