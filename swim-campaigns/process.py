@@ -102,8 +102,10 @@ def build_skills_filter(skills):
 
 def build_query(campaign, search, config):
     """Build the SQL query for a specific search."""
-    req_ids = ", ".join(str(r) for r in campaign["requisition_ids"])
-    location_filter = build_location_filter(search["location"]["cities"])
+    req_ids_list = campaign.get("requisition_ids", [])
+    req_ids = ", ".join(str(r) for r in req_ids_list) if req_ids_list else None
+    has_location = search.get("location", {}).get("cities")
+    location_filter = build_location_filter(has_location) if has_location else None
     skills_filter = build_skills_filter(search.get("skills_preferred", []))
 
     # Check if we should exclude employed candidates
@@ -121,22 +123,38 @@ def build_query(campaign, search, config):
     if skills_required:
         skills_required_filter = f"AND ({build_skills_filter(skills_required)})"
 
+    # Build CTEs conditionally
+    campaign_applicants_cte = ""
+    campaign_applicants_join = ""
+    if req_ids:
+        campaign_applicants_cte = f"""campaign_applicants AS (
+    -- Get all applicants who applied to the target requisitions
+    SELECT DISTINCT jl.applicant_id
+    FROM bronze.portal_applicant_job_listings jl
+    WHERE jl.requisition_id IN ({req_ids})
+),"""
+        campaign_applicants_join = "JOIN campaign_applicants ca ON a.id = ca.applicant_id"
+
+    # Build WHERE clause for final SELECT
+    where_conditions = []
+    if location_filter:
+        where_conditions.append(f"({location_filter})")
+    if skills_required_filter:
+        where_conditions.append(skills_required_filter.lstrip("AND "))
+    # Default to true if no conditions (all candidates pass)
+    where_clause = "\n    AND ".join(where_conditions) if where_conditions else "1=1"
+
     # Build the query
     query = f"""
 -- Swim Campaign: {campaign['name']}
 -- Search: {search['name']}
 -- Generated: {datetime.now().isoformat()}
--- Requisitions: {req_ids}
+-- Requisitions: {req_ids or 'all applicants'}
 -- Exclude currently employed: {exclude_employed}
 -- Applied within days: {applied_within_days or 'no limit'}
 -- Skills required (at least one): {', '.join(skills_required) if skills_required else 'none'}
 
-WITH campaign_applicants AS (
-    -- Get all applicants who applied to the target requisitions
-    SELECT DISTINCT jl.applicant_id
-    FROM bronze.portal_applicant_job_listings jl
-    WHERE jl.requisition_id IN ({req_ids})
-),
+WITH {campaign_applicants_cte}
 currently_employed AS (
     -- Get anyone currently employed (via ADP) - exclude from results
     SELECT DISTINCT applicant_id
@@ -157,7 +175,7 @@ applicant_details AS (
         a.applicant_status_id,
         ps.name as status
     FROM bronze.portal_applicants a
-    JOIN campaign_applicants ca ON a.id = ca.applicant_id
+    {campaign_applicants_join}
     LEFT JOIN bronze.portal_applicant_statuses ps ON a.applicant_status_id = ps.id
     LEFT JOIN currently_employed ce ON a.id = ce.applicant_id
     WHERE a.deleted_at IS NULL
@@ -193,11 +211,7 @@ SELECT
     END as skills_match
 FROM applicant_details ad
 LEFT JOIN resume_data rd ON ad.applicant_id = rd.applicant_id
-WHERE (
-    {location_filter}
-)
--- Required skills filter (at least one must match)
-{skills_required_filter}
+WHERE {where_clause}
 ORDER BY
     ad.last_applied_at DESC,
     ad.last_name,
@@ -209,8 +223,12 @@ ORDER BY
 def run_search(engine, campaign, search, output_dir):
     """Run a single search and save results."""
     print(f"\nRunning search: {search['name']}")
-    print(f"  Location: {search['location']['center']} ({search['location']['radius_miles']} mile radius)")
-    print(f"  Cities included: {len(search['location']['cities'])}")
+    location = search.get('location', {})
+    if location.get('cities'):
+        print(f"  Location: {location.get('center', 'N/A')} ({location.get('radius_miles', 0)} mile radius)")
+        print(f"  Cities included: {len(location['cities'])}")
+    else:
+        print(f"  Location: All locations")
 
     # Build and save query
     query = build_query(campaign, search, None)
@@ -249,7 +267,8 @@ def generate_summary_report(campaign, search_results, output_dir):
     report_lines.append(f"# Swim Campaign Summary")
     report_lines.append("")
     report_lines.append(f"**Campaign:** {campaign['name']}  ")
-    report_lines.append(f"**Client:** {campaign['client']}  ")
+    if campaign.get('client'):
+        report_lines.append(f"**Client:** {campaign['client']}  ")
     report_lines.append(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}  ")
     if campaign.get('requestor'):
         report_lines.append(f"**Requestor:** {campaign.get('requestor')}  ")
@@ -260,7 +279,11 @@ def generate_summary_report(campaign, search_results, output_dir):
     # Search Criteria
     report_lines.append("## Search Criteria")
     report_lines.append("")
-    report_lines.append(f"**Requisition IDs:** {', '.join(str(r) for r in campaign['requisition_ids'])}")
+    req_ids = campaign.get('requisition_ids', [])
+    if req_ids:
+        report_lines.append(f"**Requisition IDs:** {', '.join(str(r) for r in req_ids)}")
+    else:
+        report_lines.append(f"**Requisition IDs:** All applicants (no requisition filter)")
     report_lines.append("")
 
     filters = campaign.get('filters', {})
@@ -289,12 +312,18 @@ def generate_summary_report(campaign, search_results, output_dir):
             pct = f"{(skills_count/count*100):.0f}%" if count > 0 else "N/A"
             total_candidates += count
             total_with_skills += skills_count
+            location = search.get('location', {})
+            loc_center = location.get('center', 'All locations')
+            loc_radius = f"{location.get('radius_miles', 0)} mi" if location.get('cities') else 'N/A'
             report_lines.append(
-                f"| {name.title()} | {search['location']['center']} | "
-                f"{search['location']['radius_miles']} mi | {count} | {skills_count} ({pct}) |"
+                f"| {name.title()} | {loc_center} | "
+                f"{loc_radius} | {count} | {skills_count} ({pct}) |"
             )
         else:
-            report_lines.append(f"| {name.title()} | {search['location']['center']} | {search['location']['radius_miles']} mi | ERROR | - |")
+            location = search.get('location', {})
+            loc_center = location.get('center', 'All locations')
+            loc_radius = f"{location.get('radius_miles', 0)} mi" if location.get('cities') else 'N/A'
+            report_lines.append(f"| {name.title()} | {loc_center} | {loc_radius} | ERROR | - |")
 
     report_lines.append("")
     total_pct = f"{(total_with_skills/total_candidates*100):.0f}%" if total_candidates > 0 else "N/A"
@@ -424,8 +453,9 @@ def main():
     campaign = load_campaign(args.campaign)
 
     print(f"\nCampaign: {campaign['name']}")
-    print(f"Client: {campaign['client']}")
-    print(f"Requisitions: {campaign['requisition_ids']}")
+    if campaign.get('client'):
+        print(f"Client: {campaign['client']}")
+    print(f"Requisitions: {campaign.get('requisition_ids', 'All applicants')}")
 
     # Set up output directory
     output_dir = Path(__file__).parent / "campaigns" / args.campaign

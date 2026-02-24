@@ -1,0 +1,33 @@
+# Swim Campaign: CVent Skill Search
+# Created: 2026-02-24
+# Requestor: Whitney
+
+name: "CVent Skill Search"
+requestor: "Whitney"
+
+filters:
+  exclude_hired: true
+  applied_within_days: 60
+
+searches:
+  - name: "cvent"
+    output_file: "cvent.csv"
+    skills_required:
+      - "cvent"
+      - "c-vent"
+    skills_preferred:
+      - "cvent"
+      - "event management"
+      - "event planning"
+
+output_fields:
+  - applicant_id
+  - first_name
+  - last_name
+  - email
+  - phone
+  - location
+  - experience_summary
+  - last_applied_at
+  - status
+  - skills_match
