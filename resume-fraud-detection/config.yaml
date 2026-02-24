@@ -34,6 +34,17 @@ detection:
     # Default lookback in days
     lookback_days: 30
 
+  # Method 4: Shared Text Block Detection
+  shared_text_blocks:
+    # Minimum character length for a chunk to be considered meaningful
+    min_chunk_length: 100
+    # Minimum shared chunks between two applicants to flag a pair
+    min_shared_chunks: 2
+    # Minimum unique applicant pairs to report (general scan)
+    threshold: 2
+    # Default lookback in days
+    lookback_days: 30
+
 # Output settings
 output:
   format: "csv"
