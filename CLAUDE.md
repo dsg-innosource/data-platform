@@ -6,12 +6,13 @@ Context for AI assistants working on this repository. For the human-readable pro
 
 This is InnoSource's data platform — the central repository for data governance, analytics, and data pipeline work. It's owned by a small data governance/analytics team (3 people, led by Sean Beal) that follows a **Data as a Product** methodology.
 
-The repo contains four types of things:
+The repo contains five types of things:
 
 1. **Data processes** — Python ETL pipelines in self-contained folders
 2. **Metabase SQL** — Version-controlled SQL for foundational Metabase models
-3. **Silver layer transforms** — SQL scripts for bronze → silver transformations
-4. **Dagster orchestration** — Pipeline definitions, schedules, and sensors
+3. **Database objects** — Version-controlled views, and eventually stored procedures, organized by object type in `database/`
+4. **Silver layer transforms** — Active materialization scripts (future: dbt models) in `transforms/`
+5. **Dagster orchestration** — Pipeline definitions, schedules, and sensors
 
 ## Architecture Decisions (Current)
 
@@ -20,7 +21,8 @@ These decisions were made in February 2026. See [REPO_RECOMMENDATIONS.md](REPO_R
 | Decision | Choice | Notes |
 |----------|--------|-------|
 | Orchestration | Dagster Cloud (Solo Plan, $10/month) | Manages scheduling, monitoring, alerting. Auto-deploys from GitHub. |
-| Transformation layer | Plain SQL scripts | In `transforms/`. Will migrate to dbt when we have 10+ transforms. |
+| Database objects | SQL in `database/` | Views in `database/views/`, future procs in `database/procs/`. Version-controlled DB definitions. |
+| Transformation layer | Plain SQL scripts | In `transforms/` (when needed). Will migrate to dbt when we have 10+ transforms. |
 | Data warehouse | PostgreSQL on Digital Ocean | Bronze/silver/gold schema architecture. |
 | ELT | Airbyte → PostgreSQL bronze | Airbyte handles extract-load. We handle transform. |
 | Visualization | Metabase | Connected to PostgreSQL. Base model SQL is version-controlled here. |
@@ -28,7 +30,7 @@ These decisions were made in February 2026. See [REPO_RECOMMENDATIONS.md](REPO_R
 
 ### Future migration path
 
-Dagster was chosen partly because of its first-class `dagster-dbt` integration. When transform count exceeds ~10, the team plans to adopt dbt Core. SQL files in `transforms/` are written as standalone scripts specifically so they can become dbt models with minimal changes. Dagster remains the orchestrator regardless.
+Dagster was chosen partly because of its first-class `dagster-dbt` integration. When transform count exceeds ~10, the team plans to adopt dbt Core. SQL files in `transforms/` and `database/` are written as standalone scripts specifically so they can become dbt models with minimal changes. Dagster remains the orchestrator regardless.
 
 ## Code Patterns to Follow
 
@@ -50,9 +52,13 @@ When creating a new process, follow this exactly. The `process.py` naming conven
 
 ### SQL files
 
-SQL transforms go in `transforms/bronze_to_silver/` as standalone `.sql` files. Do NOT embed SQL in Python unless the transform requires Python logic (pandas, API calls, etc.). Standalone SQL files are portable and will eventually become dbt models.
+There are three homes for SQL in this repo, each with a distinct purpose:
 
-Metabase model SQL goes in `metabase/models/`. These are the source-of-truth definitions for Metabase base models. When modifying, update both the `.sql` file and the Metabase model.
+- **`database/`** — Static database object definitions (views, future stored procedures). Organized by object type and schema layer (e.g., `database/views/silver/`). These are version-controlled DDL, not active processes.
+- **`transforms/bronze_to_silver/`** — Active materialization scripts that Dagster executes to create/update silver tables. These will eventually become dbt models. Do NOT embed transform SQL in Python unless the transform requires Python logic (pandas, API calls, etc.).
+- **`metabase/models/`** — Source-of-truth definitions for Metabase base models. When modifying, update both the `.sql` file and the Metabase model.
+
+**Key distinction:** Views and other static DB objects go in `database/`, not `transforms/`. A view is a stored query definition, not a transform process.
 
 ### Configuration
 

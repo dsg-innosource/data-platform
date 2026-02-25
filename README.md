@@ -19,9 +19,13 @@ Self-contained Python pipelines, each with a `process.py` entry point:
 
 Version-controlled SQL for our foundational Metabase models. See [metabase/catalog.yaml](metabase/catalog.yaml) for the full registry mapping DP-IDs to Metabase card IDs.
 
+### Database Objects
+
+Version-controlled SQL definitions for database views, and eventually stored procedures, in [database/](database/). Organized by object type and schema layer (e.g., `database/views/silver/`).
+
 ### Silver Layer Transforms
 
-SQL scripts for bronze → silver transformations in [transforms/](transforms/). These are executed by Dagster on a schedule.
+Active materialization scripts for bronze → silver transformations in [transforms/](transforms/). These are executed by Dagster on a schedule. Static database objects like views belong in `database/`, not here.
 
 ### Orchestration
 
@@ -75,7 +79,7 @@ PII and sensitive data is excluded from git via `.gitignore`. Never commit Excel
 ## Contributing
 
 1. Follow established patterns — self-contained process folders, `process.py` naming, `config.yaml` for settings
-2. Keep SQL transforms in `transforms/` as standalone `.sql` files (not embedded in Python)
+2. Put database object definitions (views, procs) in `database/` — keep `transforms/` for active materialization scripts
 3. Update documentation when you change things
 4. Test before pushing — Dagster Cloud auto-deploys from `main`
 
