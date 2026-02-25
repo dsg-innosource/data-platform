@@ -13,6 +13,7 @@ Usage:
     python resume-fraud-detection/process.py --pdf
     python resume-fraud-detection/process.py --seed "user@example.com" --start-date 2026-01-01 --end-date 2026-02-20
     python resume-fraud-detection/process.py --seed "user@example.com" --start-date 2026-01-01 --end-date 2026-02-20 --pdf
+    python resume-fraud-detection/process.py --req 9175 --lookback 30 --pdf
 """
 
 import argparse
@@ -106,6 +107,39 @@ def describe_date_filter(config, lookback_key):
 
 
 # --------------------------------------
+# Requisition Filter Helper
+# --------------------------------------
+
+def build_req_filter(config, applicant_alias="a"):
+    """Build SQL filter to constrain results to applicants on a specific requisition.
+
+    Returns an empty string when no --req flag was provided.
+    Uses portal_requisition_statistics to link applicants to requisitions.
+    """
+    req_key = config.get("_req_filter")
+    if not req_key:
+        return ""
+    # Match by numeric requisition ID or by requisition_key substring
+    # Use %% to escape percent signs since exec_driver_sql uses % as param markers
+    return f"""
+      AND {applicant_alias}.id IN (
+          SELECT rs_req.applicant_id
+          FROM bronze.portal_requisition_statistics rs_req
+          JOIN bronze.portal_requisitions r_req ON rs_req.requisition_id = r_req.id
+          WHERE r_req.id = {req_key}
+             OR r_req.requisition_key LIKE '%%{req_key}%%'
+      )"""
+
+
+def describe_req_filter(config):
+    """Return a human-readable description of the requisition filter for SQL comments."""
+    req_key = config.get("_req_filter")
+    if req_key:
+        return f"Requisition filter: #{req_key}"
+    return ""
+
+
+# --------------------------------------
 # Seed Applicant Lookup
 # --------------------------------------
 
@@ -145,6 +179,7 @@ def lookup_seed_applicant(engine, config):
 
     with engine.connect() as conn:
         result = conn.exec_driver_sql(query)
+        columns = list(result.keys())
         rows = result.fetchall()
 
     if not rows:
@@ -152,7 +187,6 @@ def lookup_seed_applicant(engine, config):
         sys.exit(1)
 
     row = rows[0]
-    columns = result.keys()
     seed_info = dict(zip(columns, row))
 
     print(f"\nSeed applicant found:")
@@ -186,12 +220,15 @@ def build_employment_history_query(config):
     threshold = detection["threshold"]
     date_desc = describe_date_filter(config, "employment_history")
     doc_date_filter = build_date_filter(config, "d.created_at", "employment_history")
+    req_filter = build_req_filter(config, "a")
+    req_desc = describe_req_filter(config)
 
     query = f"""
 -- Resume Fraud Detection: Employment History Matching
 -- Generated: {datetime.now().isoformat()}
 -- Threshold: {threshold}+ unique applicants with identical employment fingerprint
 -- {date_desc}
+-- {req_desc}
 -- Method: MD5 hash of AI-extracted work experience from resume_scores table
 
 WITH
@@ -220,7 +257,7 @@ experience_fingerprints AS (
       AND d.resume_text IS NOT NULL
       AND LENGTH(d.resume_text) > 500
       AND rs.resume_only_experience IS NOT NULL
-      AND LENGTH(TRIM(rs.resume_only_experience)) > 100
+      AND LENGTH(TRIM(rs.resume_only_experience)) > 100{req_filter}
 ),
 
 -- Find suspicious groups (3+ applicants with identical experience fingerprint)
@@ -264,6 +301,8 @@ def build_seeded_employment_query(config, seed_info):
     threshold = 2
     date_desc = describe_date_filter(config, "employment_history")
     doc_date_filter = build_date_filter(config, "d.created_at", "employment_history")
+    req_filter = build_req_filter(config, "a")
+    req_desc = describe_req_filter(config)
 
     query = f"""
 -- Resume Fraud Detection: Seeded Employment History Matching
@@ -272,6 +311,7 @@ def build_seeded_employment_query(config, seed_info):
 -- Seed employment hash: {seed_hash}
 -- Threshold: {threshold}+ unique applicants (reduced for seed mode)
 -- {date_desc}
+-- {req_desc}
 
 WITH
 experience_fingerprints AS (
@@ -298,7 +338,7 @@ experience_fingerprints AS (
       AND d.resume_text IS NOT NULL
       AND LENGTH(d.resume_text) > 500
       AND rs.resume_only_experience IS NOT NULL
-      AND LENGTH(TRIM(rs.resume_only_experience)) > 100
+      AND LENGTH(TRIM(rs.resume_only_experience)) > 100{req_filter}
 ),
 
 -- Filter to seed's employment hash only
@@ -345,11 +385,14 @@ def build_multi_resume_query(config):
     min_distinct = detection["min_distinct_resumes"]
     date_desc = describe_date_filter(config, "multi_resume")
     date_filter = build_date_filter(config, "d.created_at", "multi_resume")
+    req_filter = build_req_filter(config, "a")
+    req_desc = describe_req_filter(config)
 
     query = f"""
 -- Resume Fraud Detection: Multi-Resume Divergence
 -- Generated: {datetime.now().isoformat()}
 -- {date_desc}
+-- {req_desc}
 -- Minimum distinct resumes: {min_distinct}
 
 WITH applicant_resumes AS (
@@ -368,7 +411,7 @@ WITH applicant_resumes AS (
       AND d.resume_text IS NOT NULL
       AND LENGTH(d.resume_text) > 500
       AND a.email IS NOT NULL
-      AND a.deleted_at IS NULL
+      AND a.deleted_at IS NULL{req_filter}
 ),
 
 email_resume_counts AS (
@@ -432,12 +475,15 @@ def build_seeded_multi_resume_query(config, seed_info):
     min_distinct = detection["min_distinct_resumes"]
     date_desc = describe_date_filter(config, "multi_resume")
     date_filter = build_date_filter(config, "d.created_at", "multi_resume")
+    req_filter = build_req_filter(config, "a")
+    req_desc = describe_req_filter(config)
 
     query = f"""
 -- Resume Fraud Detection: Seeded Multi-Resume Divergence
 -- Generated: {datetime.now().isoformat()}
 -- Seed: {seed_email}
 -- {date_desc}
+-- {req_desc}
 
 WITH applicant_resumes AS (
     SELECT
@@ -456,7 +502,7 @@ WITH applicant_resumes AS (
       AND LENGTH(d.resume_text) > 500
       AND a.email IS NOT NULL
       AND a.deleted_at IS NULL
-      AND LOWER(a.email) = LOWER('{seed_email}')
+      AND LOWER(a.email) = LOWER('{seed_email}'){req_filter}
 ),
 
 email_resume_counts AS (
@@ -524,12 +570,15 @@ def build_summary_match_query(config):
     threshold = detection["threshold"]
     date_desc = describe_date_filter(config, "professional_summary")
     date_filter = build_date_filter(config, "d.created_at", "professional_summary")
+    req_filter = build_req_filter(config, "a")
+    req_desc = describe_req_filter(config)
 
     query = f"""
 -- Resume Fraud Detection: Professional Summary Matching (SECONDARY SIGNAL)
 -- Generated: {datetime.now().isoformat()}
 -- Threshold: {threshold}+ unique applicants sharing identical summary
 -- {date_desc}
+-- {req_desc}
 -- NOTE: This is a corroborating signal only, not a standalone fraud indicator
 
 WITH summary_extracts AS (
@@ -548,7 +597,7 @@ WITH summary_extracts AS (
     WHERE {date_filter}
       AND a.deleted_at IS NULL
       AND d.is_resume = TRUE
-      AND d.resume_text IS NOT NULL
+      AND d.resume_text IS NOT NULL{req_filter}
 ),
 
 suspicious_summaries AS (
@@ -592,6 +641,8 @@ def build_seeded_summary_query(config, seed_info):
     threshold = 2
     date_desc = describe_date_filter(config, "professional_summary")
     date_filter = build_date_filter(config, "d.created_at", "professional_summary")
+    req_filter = build_req_filter(config, "a")
+    req_desc = describe_req_filter(config)
 
     query = f"""
 -- Resume Fraud Detection: Seeded Professional Summary Matching
@@ -600,6 +651,7 @@ def build_seeded_summary_query(config, seed_info):
 -- Seed summary hash: {seed_hash}
 -- Threshold: {threshold}+ unique applicants (reduced for seed mode)
 -- {date_desc}
+-- {req_desc}
 -- NOTE: This is a corroborating signal only, not a standalone fraud indicator
 
 WITH summary_extracts AS (
@@ -618,7 +670,7 @@ WITH summary_extracts AS (
     WHERE {date_filter}
       AND a.deleted_at IS NULL
       AND d.is_resume = TRUE
-      AND d.resume_text IS NOT NULL
+      AND d.resume_text IS NOT NULL{req_filter}
 ),
 
 -- Filter to seed's summary hash only
@@ -667,6 +719,8 @@ def build_shared_text_blocks_query(config):
     min_shared_chunks = detection["min_shared_chunks"]
     date_desc = describe_date_filter(config, "shared_text_blocks")
     doc_date_filter = build_date_filter(config, "d.created_at", "shared_text_blocks")
+    req_filter = build_req_filter(config, "a")
+    req_desc = describe_req_filter(config)
 
     query = f"""
 -- Resume Fraud Detection: Shared Text Block Detection
@@ -674,6 +728,7 @@ def build_shared_text_blocks_query(config):
 -- Min chunk length: {min_chunk_length} chars
 -- Min shared chunks: {min_shared_chunks}
 -- {date_desc}
+-- {req_desc}
 -- Method: Split experience into paragraphs, MD5 each, find pairs sharing multiple chunks
 
 WITH
@@ -695,7 +750,7 @@ experience_text AS (
       AND d.resume_text IS NOT NULL
       AND LENGTH(d.resume_text) > 500
       AND rs.resume_only_experience IS NOT NULL
-      AND LENGTH(TRIM(rs.resume_only_experience)) > {min_chunk_length}
+      AND LENGTH(TRIM(rs.resume_only_experience)) > {min_chunk_length}{req_filter}
 ),
 
 -- Split experience into paragraph chunks and hash each
@@ -769,6 +824,8 @@ def build_seeded_shared_text_blocks_query(config, seed_info):
     seed_id = seed_info['applicant_id']
     date_desc = describe_date_filter(config, "shared_text_blocks")
     doc_date_filter = build_date_filter(config, "d.created_at", "shared_text_blocks")
+    req_filter = build_req_filter(config, "a")
+    req_desc = describe_req_filter(config)
 
     query = f"""
 -- Resume Fraud Detection: Seeded Shared Text Block Detection
@@ -777,6 +834,7 @@ def build_seeded_shared_text_blocks_query(config, seed_info):
 -- Min chunk length: {min_chunk_length} chars
 -- Threshold: 1+ shared chunks (reduced for seed mode)
 -- {date_desc}
+-- {req_desc}
 
 WITH
 -- Get seed applicant's experience chunks
@@ -812,7 +870,7 @@ other_chunks AS (
       AND d.resume_text IS NOT NULL
       AND LENGTH(d.resume_text) > 500
       AND rs.resume_only_experience IS NOT NULL
-      AND LENGTH(TRIM(chunk)) >= {min_chunk_length}
+      AND LENGTH(TRIM(chunk)) >= {min_chunk_length}{req_filter}
 )
 
 SELECT
@@ -852,7 +910,9 @@ def run_detection_method(engine, query, method_name, output_dir):
     try:
         with engine.connect() as conn:
             result = conn.exec_driver_sql(query)
-            df = pd.DataFrame(result.fetchall(), columns=result.keys())
+            columns = list(result.keys())
+            rows = result.fetchall()
+            df = pd.DataFrame(rows, columns=columns)
         print(f"  Results: {len(df)} rows flagged")
 
         # Save CSV
@@ -1036,6 +1096,9 @@ def generate_report(config, results, method_results, output_dir, seed_info=None)
     report_lines.append("# Resume Fraud Detection Report")
     report_lines.append("")
     report_lines.append(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}  ")
+    req_key = config.get("_req_filter")
+    if req_key:
+        report_lines.append(f"**Requisition:** #{req_key}  ")
     date_range = config.get("_date_range")
     if date_range:
         report_lines.append(f"**Analysis Period:** {date_range['start']} to {date_range['end']}  ")
@@ -1409,6 +1472,10 @@ def main():
         "--seed",
         help="Investigate a specific applicant's fraud ring by email address",
     )
+    parser.add_argument(
+        "--req",
+        help="Filter to applicants on a specific requisition (by requisition key, e.g. 9175)",
+    )
 
     args = parser.parse_args()
 
@@ -1425,6 +1492,16 @@ def main():
     # Load configuration
     print("Loading configuration...")
     config = load_config()
+
+    # Apply requisition filter
+    if args.req:
+        config["_req_filter"] = args.req
+        print(f"  Requisition filter: #{args.req}")
+        # Reduce thresholds for req-scoped scans (smaller population)
+        config["detection"]["employment_history"]["threshold"] = 2
+        config["detection"]["professional_summary"]["threshold"] = 2
+        config["detection"]["shared_text_blocks"]["min_shared_chunks"] = 2
+        print(f"  Thresholds reduced for requisition-scoped scan")
 
     # Apply date range or lookback override
     if args.start_date:
