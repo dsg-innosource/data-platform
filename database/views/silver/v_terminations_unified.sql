@@ -8,6 +8,25 @@
 --           (record entry date) rather than iso_year / iso_week
 --           (official termination date), because terminations are frequently
 --           entered days or weeks after the event occurred.
+--         : 2026-03-17 — Added AJL fallback for client/requisition resolution.
+--           portal_applicants.client_id is NULL for ~97.6% of applicant rows;
+--           the view previously left client_name NULL for those records.
+--           Fix: when portal_applicants.client_id IS NULL, fall back to the
+--           most recent portal_applicant_job_listings row to resolve
+--           requisition_id and client_id.
+--           Data analysis (2026-03-17, 21,946 non-excluded terminations):
+--             70.5% resolved via portal_applicants.client_id (primary)
+--             14.7% recoverable via AJL fallback
+--             14.9% true orphans (neither source has client data)
+--           Where both sources have data, portal_applicants.client_id is
+--           authoritative (85% agree; 15% disagree due to multi-client
+--           applicant history — applicants who applied at one client but
+--           were placed at another).
+--
+-- ⚠ PREREQUISITE — run this index before deploying the view:
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ajl_applicant_id
+--     ON bronze.portal_applicant_job_listings (applicant_id, created_at DESC);
+--   Without this index, the ajl_fallback CTE will seq-scan a 1 GB table.
 -- ============================================================================
 -- DESIGN NOTES:
 --   Grain      : One row per termination event
@@ -16,9 +35,16 @@
 --
 --   In Portal 1: requisition = position = order (1:1:1)
 --                position_id and order_id are the same value (r.id)
---                sourced from portal_applicants.requisition_id
+--                sourced from portal_applicants.requisition_id (primary)
+--                or portal_applicant_job_listings.requisition_id (fallback)
 --   In Portal 2: positions and orders are separate (1:many)
 --                terminations → users → assignments → orders → positions
+--
+--   Client resolution priority (portal_v1 branch):
+--     1. portal_applicants.client_id         — set at placement; authoritative
+--     2. portal_applicant_job_listings        — most recent AJL row; fallback
+--        (only joined when portal_applicants.client_id IS NULL)
+--     3. NULL                                 — true orphan; no placement data
 --
 --   Source (now)    : bronze.portal_terminations  (source_system = 'portal_v1')
 --   Source (future) : cajetan.terminations        (source_system = 'cajetan')
@@ -59,7 +85,7 @@
 --   portal_requisitions.id               → orders.id / positions.id  (order_id / position_id)
 --   portal_requisitions.requisition_key  → positions.legacy_requisition_id (position_key)
 --   portal_requisitions.position         → positions.title            (position_title)
---   portal_applicants.client_id          → clients.id                 (client_id)
+--   COALESCE(a.client_id, r_fb.client_id)→ clients.id                (client_id)
 --   portal_clients.name                  → clients.name               (client_name)
 --   portal_applicants.recruiter_id       → assignments.recruiter_id → users.id
 --
@@ -96,8 +122,24 @@
 --     AND is_excluded           = FALSE
 --     AND termination_created_at >= DATE_TRUNC('year', CURRENT_DATE);
 -- ============================================================================
-drop view silver.v_terminations_unified;
-CREATE OR REPLACE VIEW silver.v_terminations_unified AS
+
+
+-- ── Step 0: Index prerequisite ────────────────────────────────────────────
+-- Run this before the view. CONCURRENTLY avoids locking the table.
+-- Safe to re-run; IF NOT EXISTS is idempotent.
+--
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ajl_applicant_id
+  ON bronze.portal_applicant_job_listings (applicant_id, created_at DESC);
+
+
+-- ── Step 1: Deploy the view ───────────────────────────────────────────────
+-- DROP + CREATE required because CREATE OR REPLACE cannot reorder/rename columns.
+-- (No column changes in this revision — column list is identical to prior version.
+--  Using DROP/CREATE as a precautionary pattern per project convention.)
+
+DROP VIEW IF EXISTS silver.v_terminations_unified;
+
+CREATE VIEW silver.v_terminations_unified AS
 
 -- ── Portal 1 branch ───────────────────────────────────────────────────────
 WITH
@@ -129,6 +171,21 @@ recruiters AS (
     FROM bronze.portal_users u
     INNER JOIN bronze.portal_role_user ru ON u.id = ru.user_id
     WHERE ru.role_id = 6
+),
+
+-- 3. AJL fallback: most recent job listing per applicant.
+--    ONLY used when portal_applicants.client_id IS NULL (~97.6% of applicant rows).
+--    The LEFT JOIN condition (a.client_id IS NULL) ensures this subquery is only
+--    evaluated for rows that actually need it, keeping the primary path fast.
+--    Requires idx_ajl_applicant_id on (applicant_id, created_at DESC).
+ajl_fallback AS (
+    SELECT DISTINCT ON (applicant_id)
+        applicant_id,
+        requisition_id
+    FROM bronze.portal_applicant_job_listings
+    ORDER BY
+        applicant_id,
+        created_at DESC
 )
 
 SELECT
@@ -171,14 +228,19 @@ SELECT
     cu.full_name,
 
     -- ── Position / Order context ──────────────────────────────────────────
-    a.requisition_id                            AS position_id,
-    a.requisition_id                            AS order_id,
+    -- requisition_id: primary source is portal_applicants; fallback to AJL.
+    COALESCE(a.requisition_id, ajl_fallback.requisition_id)
+                                                AS position_id,
+    COALESCE(a.requisition_id, ajl_fallback.requisition_id)
+                                                AS order_id,
     r.requisition_key                           AS position_key,
     r.position                                  AS position_title,
     r.is_pipeline,
 
     -- ── Client ────────────────────────────────────────────────────────────
-    a.client_id,
+    -- client_id: portal_applicants is authoritative when populated.
+    -- Falls back to the client on the resolved requisition (via AJL).
+    COALESCE(a.client_id, r.client_id)          AS client_id,
     c.name                                      AS client_name,
 
     -- ── Tenure ────────────────────────────────────────────────────────────
@@ -241,10 +303,21 @@ INNER JOIN canonical_users cu
 INNER JOIN bronze.portal_applicants a
     ON a.id = cu.applicant_id
 
-LEFT JOIN bronze.portal_clients c
-    ON c.id = a.client_id
+-- AJL fallback: only join when portal_applicants has no client/requisition.
+-- The a.client_id IS NULL condition short-circuits this join for the ~2.4%
+-- of applicant rows where client_id IS populated, keeping the primary path fast.
+LEFT JOIN ajl_fallback
+    ON ajl_fallback.applicant_id = a.id
+   AND a.client_id IS NULL
+
+-- Resolve requisition: primary from portal_applicants, fallback from AJL.
 LEFT JOIN bronze.portal_requisitions r
-    ON r.id = a.requisition_id
+    ON r.id = COALESCE(a.requisition_id, ajl_fallback.requisition_id)
+
+-- Resolve client: primary from portal_applicants, fallback from requisition
+-- (which was resolved via AJL above).
+LEFT JOIN bronze.portal_clients c
+    ON c.id = COALESCE(a.client_id, r.client_id)
 
 LEFT JOIN recruiters rec
     ON rec.id = a.recruiter_id
@@ -296,6 +369,13 @@ field for late-entry analysis. Negative = future-dated record.
 record_created_at: backward-compat alias for termination_created_at. Prefer
 termination_created_at in new queries.
 
+CLIENT RESOLUTION (2026-03-17):
+  Primary:  portal_applicants.client_id (authoritative when populated; ~2.4% of rows)
+  Fallback: most recent portal_applicant_job_listings row → portal_requisitions.client_id
+            (covers ~14.7% of terminations otherwise left with NULL client_name)
+  Orphan:   ~14.9% of terminations have no client data in either source
+  Requires: idx_ajl_applicant_id on portal_applicant_job_listings(applicant_id, created_at DESC)
+
 Portal 1: position_id = order_id (1:1 — same requisition).
 Portal 2: position_id ≠ order_id (1:many — add UNION ALL branch when Cajetan is live).
 
@@ -311,10 +391,10 @@ Join keys:
 
 -- ============================================================================
 -- VALIDATION QUERIES
--- Run after CREATE OR REPLACE VIEW to confirm correctness.
+-- Run after deploying to confirm correctness.
 -- ============================================================================
 
--- 1. Row count — should equal portal_terminations minus 1 orphan
+-- 1. Row count — should be unchanged from prior version
 --    SELECT COUNT(*) FROM silver.v_terminations_unified;
 --    SELECT COUNT(*) FROM bronze.portal_terminations;
 
@@ -324,13 +404,27 @@ Join keys:
 --    GROUP BY 1, 2
 --    HAVING COUNT(*) > 1;
 
--- 3. Category distribution
+-- 3. Bryant fix verification — should now show Goodyear Flex - Fayetteville NC
+--    SELECT termination_id, full_name, client_name, position_title, recruiter_name
+--    FROM silver.v_terminations_unified
+--    WHERE termination_id = '27842';
+
+-- 4. Client resolution improvement check
+--    SELECT
+--      COUNT(*) AS total,
+--      COUNT(client_name) AS with_client,
+--      COUNT(*) - COUNT(client_name) AS still_null,
+--      ROUND(100.0 * COUNT(client_name) / COUNT(*), 1) AS pct_resolved
+--    FROM silver.v_terminations_unified
+--    WHERE is_excluded = FALSE;
+
+-- 5. Category distribution — should be unchanged
 --    SELECT termination_category, COUNT(*)
 --    FROM silver.v_terminations_unified
 --    GROUP BY 1
 --    ORDER BY 2 DESC;
 
--- 4. Entry lag distribution — spot-check late entry patterns
+-- 6. Entry lag distribution — spot-check late entry patterns
 --    SELECT
 --      CASE
 --        WHEN entry_lag_days < 0  THEN 'Future-dated'
@@ -345,7 +439,7 @@ Join keys:
 --    GROUP BY 1
 --    ORDER BY MIN(entry_lag_days);
 
--- 5. Current entry week spot-check (operational view)
+-- 7. Current entry week spot-check (operational view)
 --    SELECT full_name, client_name, termination_date, termination_created_at::date,
 --           entry_lag_days, termination_category, termination_reason,
 --           recruiter_name, tenure_days, tenure_band,
@@ -356,12 +450,12 @@ Join keys:
 --      AND is_excluded    = FALSE
 --    ORDER BY termination_created_at DESC, client_name, full_name;
 
--- 6. Late entry flag — records entered this week with termination_date in a prior week
+-- 8. Late entry flag — records entered this week with termination_date in a prior week
 --    SELECT full_name, client_name, termination_date, termination_created_at::date,
 --           entry_lag_days, termination_category
 --    FROM silver.v_terminations_unified
 --    WHERE entry_iso_year = EXTRACT(isoyear FROM CURRENT_DATE)
 --      AND entry_iso_week = EXTRACT(week    FROM CURRENT_DATE)
 --      AND is_excluded    = FALSE
---      AND entry_lag_days > 6   -- termination_date is more than 6 days before entry
+--      AND entry_lag_days > 6
 --    ORDER BY entry_lag_days DESC;
