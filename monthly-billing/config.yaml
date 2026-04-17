@@ -19,11 +19,6 @@ billing_rates:
   "Job News": 250.00
   "Tri County Home Care": 200.00
 
-# Remaining budget $$ by client (update monthly)
-remaining_budget:
-  "Job News": 200.0
-  "Tri County Home Care": 3000.0
-
 # Date format settings
 date_input_format: "%m/%d/%Y, %I:%M:%S %p %Z" # ClickUp format: "09/29/2025, 1:23:21 PM EDT"
 date_output_format: "%Y-%m-%d" # ISO format
