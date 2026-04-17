@@ -91,7 +91,7 @@ SELECT
     -- Legacy / Cross-Reference
     -- -------------------------------------------------------------------------
     r.requisition_key,              -- Keep for ADP joins (adp_tenure_history.requisition_key)
-
+    r.is_pipeline, -- needed short term for reporting
     -- -------------------------------------------------------------------------
     -- Audit
     -- -------------------------------------------------------------------------
