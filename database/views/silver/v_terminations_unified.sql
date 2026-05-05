@@ -22,6 +22,17 @@
 --           authoritative (85% agree; 15% disagree due to multi-client
 --           applicant history — applicants who applied at one client but
 --           were placed at another).
+--         : 2026-05-05 — Added user-department fallback (3rd-priority client
+--           resolver). For terminations whose applicant chain dead-ends
+--           (no a.client_id, no a.requisition_id, no AJL row), resolve via
+--           portal_users.onboarding_department_id → portal_departments.client_id.
+--           Recon (last 120 days, is_excluded = false):
+--             540 terminations resolve via the prior chain
+--              22 rescued by this fallback
+--               0 unfixable
+--           Rescued records still have NULL position_id, position_key,
+--           position_title, is_pipeline, and recruiter_name — there is no
+--           requisition by design. Tracked as a known limitation.
 --
 -- ⚠ PREREQUISITE — run this index before deploying the view:
 --   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ajl_applicant_id
@@ -186,6 +197,28 @@ ajl_fallback AS (
     ORDER BY
         applicant_id,
         created_at DESC
+),
+
+-- 4. User-department fallback: rescue terminations whose applicant chain
+--    dead-ends (no a.client_id, no a.requisition_id, no AJL row).
+--    Resolves client via portal_users.onboarding_department_id →
+--    portal_departments.client_id. Joined by t.user_id at the bottom of
+--    the FROM chain. Recon (last 120 days, is_excluded = false): rescues
+--    ~22 of 562 non-excluded terminations otherwise left with NULL client.
+--
+--    Note: rescued records will still have NULL position_id, position_key,
+--    position_title, is_pipeline, and recruiter_name — there is no
+--    requisition for these by design. Tracked separately as a known limitation.
+user_department_fallback AS (
+    SELECT
+        u.id                            AS user_id,
+        u.onboarding_department_id,
+        d.client_id                     AS dept_client_id,
+        c.name                          AS dept_client_name
+    FROM bronze.portal_users u
+    LEFT JOIN bronze.portal_departments d ON d.id = u.onboarding_department_id
+    LEFT JOIN bronze.portal_clients     c ON c.id = d.client_id
+    WHERE u.onboarding_department_id IS NOT NULL
 )
 
 SELECT
@@ -238,10 +271,13 @@ SELECT
     r.is_pipeline,
 
     -- ── Client ────────────────────────────────────────────────────────────
-    -- client_id: portal_applicants is authoritative when populated.
-    -- Falls back to the client on the resolved requisition (via AJL).
-    COALESCE(a.client_id, r.client_id)          AS client_id,
-    c.name                                      AS client_name,
+    -- client_id resolution priority:
+    --   1. portal_applicants.client_id    (authoritative when populated)
+    --   2. portal_requisitions.client_id  (resolved via AJL fallback)
+    --   3. portal_departments.client_id   (via portal_users.onboarding_department_id)
+    -- Final NULL only if all three sources fail.
+    COALESCE(a.client_id, r.client_id, udf.dept_client_id) AS client_id,
+    COALESCE(c.name, udf.dept_client_name)      AS client_name,
 
     -- ── Tenure ────────────────────────────────────────────────────────────
     cu.hire_date,
@@ -318,6 +354,13 @@ LEFT JOIN bronze.portal_requisitions r
 -- (which was resolved via AJL above).
 LEFT JOIN bronze.portal_clients c
     ON c.id = COALESCE(a.client_id, r.client_id)
+
+-- User-department fallback: rescues terminations whose applicant chain
+-- dead-ends (no a.client_id, no r.client_id). Joined unconditionally —
+-- the COALESCE in the SELECT picks the higher-priority source when
+-- multiple resolve.
+LEFT JOIN user_department_fallback udf
+    ON udf.user_id = t.user_id
 
 LEFT JOIN recruiters rec
     ON rec.id = a.recruiter_id
