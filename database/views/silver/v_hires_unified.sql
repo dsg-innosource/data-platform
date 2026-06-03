@@ -4,6 +4,25 @@
 --          Mirrors v_terminations_unified design for symmetry; the two views
 --          are intended to join on applicant_id (+ position_id) in reports.
 -- Created:  2026-04-17
+-- Modified: 2026-06-03 — Added offering enrichment (department_code, offering,
+--           service, is_offering_excluded, offering_source). Resolves the
+--           department-at-hire-time via a LATERAL lookup into
+--           bronze.adp_tenure_history (earliest snapshot on/after the event
+--           date for the applicant); falls back to
+--           portal_users.onboarding_department_id when no ADP row exists.
+--           Joined to silver.v_department_offering for the offering label.
+--           NOTE: bronze.portal_associates was considered and rejected as a
+--           source for current placement — its `id` column overlaps with
+--           portal_users.id only by numeric coincidence (~32% of associate
+--           rows reference different humans from different time periods, e.g.,
+--           an associate record created in 2021 colliding with a user created
+--           in 2026). Use adp_tenure_history.applicant_id as the linkage.
+--
+-- ⚠ PREREQUISITE — run this index before deploying the view:
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_adp_tenure_applicant_snap
+--     ON bronze.adp_tenure_history (applicant_id, snapshot_date);
+--   Without this index, the offering-enrichment LATERAL will seq-scan a
+--   1.16 GB table per hire-event row.
 -- ============================================================================
 -- DESIGN NOTES:
 --   Grain      : One row per "Hired" funnel event
@@ -71,6 +90,32 @@
 --
 --   Date scope : NONE. Callers filter by event_date or actual_start_date.
 --
+--   OFFERING ENRICHMENT
+--     Five columns at the end of the SELECT carry the Net Gain offering
+--     classification for each hire event:
+--
+--       department_code, department_id, department_name, offering, service,
+--       is_offering_excluded, offering_source
+--
+--     Resolution chain (per event):
+--       1. ADP point-in-time (`offering_source = 'adp_pit'`):
+--          LATERAL into bronze.adp_tenure_history, earliest snapshot where
+--          (applicant_id = rs.applicant_id AND snapshot_date >= event_date).
+--          This reflects the department the employee was actually paid in
+--          on their first post-hire snapshot. Reflects rehires correctly
+--          because the lookup is event-anchored, not applicant-anchored.
+--       2. Onboarding department fallback (`offering_source = 'onboarding_dept'`):
+--          portal_users.onboarding_department_id when ADP returns nothing.
+--          Used for never-started hires and pre-2025 events that lack ADP
+--          snapshot history.
+--       3. NULL (`offering_source = NULL`):
+--          No resolution available.
+--
+--     is_offering_excluded: TRUE when the resolved offering is one of
+--     ('Interns', 'HRMS', 'Internal', 'Long-Term'). Net Gain reports should
+--     filter is_offering_excluded = FALSE. Distinct from the
+--     v_terminations_unified is_excluded column (which is reason-based).
+--
 --   Source (now)    : bronze.portal_requisition_statistics (source_system = 'portal_v1')
 --   Source (future) : cajetan.<hire_events>                 (source_system = 'cajetan')
 --                     Add as UNION ALL branch when Cajetan is in the warehouse.
@@ -135,6 +180,18 @@
 -- ============================================================================
 
 
+-- ── Step 0: Index prerequisite ────────────────────────────────────────────
+-- Required by the offering-enrichment LATERAL into bronze.adp_tenure_history.
+-- CONCURRENTLY avoids locking the table during the build; IF NOT EXISTS makes
+-- this idempotent across deploys and across the two unified views that share
+-- the index (v_hires_unified, v_terminations_unified).
+--
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_adp_tenure_applicant_snap
+  ON bronze.adp_tenure_history (applicant_id, snapshot_date);
+
+
+-- ── Step 1: Deploy the view ───────────────────────────────────────────────
+
 DROP VIEW IF EXISTS silver.v_hires_unified;
 
 CREATE VIEW silver.v_hires_unified AS
@@ -145,12 +202,14 @@ WITH
 -- 1. Resolve duplicate portal_users → one canonical row per applicant_id.
 --    Same logic as v_terminations_unified.canonical_users:
 --      prefers is_active = TRUE, then most recently created record.
---    Used only to decorate each hire event with actual_start_date.
+--    Used to decorate each hire event with actual_start_date AND to supply
+--    onboarding_department_id for the offering-enrichment fallback.
 canonical_users AS (
     SELECT DISTINCT ON (applicant_id)
         id                                      AS user_id,
         applicant_id,
-        hire_date
+        hire_date,
+        onboarding_department_id
     FROM bronze.portal_users
     WHERE applicant_id IS NOT NULL
     ORDER BY
@@ -227,7 +286,23 @@ SELECT
     -- "Started this week" — onboarded-employee reporting. NULL until
     -- the user record has a hire_date.
     EXTRACT(isoyear FROM cu.hire_date)::int     AS start_iso_year,
-    EXTRACT(week    FROM cu.hire_date)::int     AS start_iso_week
+    EXTRACT(week    FROM cu.hire_date)::int     AS start_iso_week,
+
+    -- ── Offering enrichment ───────────────────────────────────────────────
+    -- See header "OFFERING ENRICHMENT" for the full resolution story.
+    -- Resolved department code first (ADP PIT, then onboarding fallback);
+    -- everything else is joined from v_department_offering on department_code.
+    COALESCE(adp_pit.dept_code, onboard_dept.code)  AS department_code,
+    vdo.department_id,
+    vdo.department_name,
+    vdo.offering,
+    vdo.service,
+    COALESCE(vdo.is_excluded, FALSE)                AS is_offering_excluded,
+    CASE
+        WHEN adp_pit.dept_code  IS NOT NULL THEN 'adp_pit'
+        WHEN onboard_dept.code  IS NOT NULL THEN 'onboarding_dept'
+        ELSE                                         NULL
+    END                                             AS offering_source
 
 FROM bronze.portal_requisition_statistics rs
 
@@ -248,6 +323,31 @@ LEFT JOIN bronze.portal_clients c
 
 LEFT JOIN recruiters rec
     ON rec.id = rs.created_by_recruiter_id
+
+-- ── Offering enrichment joins ─────────────────────────────────────────────
+-- 1. ADP point-in-time: earliest snapshot at or after the hire event for the
+--    applicant. Event-anchored (uses rs.created_at, not cu.hire_date) so
+--    rehires resolve to their per-event department instead of all collapsing
+--    to the latest stint. Requires idx_adp_tenure_applicant_snap.
+LEFT JOIN LATERAL (
+    SELECT TRIM(adp.home_department_code)       AS dept_code
+    FROM bronze.adp_tenure_history adp
+    WHERE adp.applicant_id   = rs.applicant_id
+      AND adp.snapshot_date >= DATE(rs.created_at)
+    ORDER BY adp.snapshot_date
+    LIMIT 1
+) adp_pit ON TRUE
+
+-- 2. Onboarding department fallback for events with no usable ADP snapshot
+--    (never-started hires, pre-2025 events). Joined to portal_departments
+--    only to expose `code`, which is what v_department_offering joins on.
+LEFT JOIN bronze.portal_departments onboard_dept
+    ON onboard_dept.id = cu.onboarding_department_id
+
+-- 3. Offering crosswalk. Joined by the resolved department code; vdo is
+--    NULL for both columns when neither ADP nor onboarding resolve.
+LEFT JOIN silver.v_department_offering vdo
+    ON vdo.department_code = COALESCE(adp_pit.dept_code, onboard_dept.code)
 
 WHERE rs.requisition_statistic_type_id = 6   -- Hired
 
@@ -301,7 +401,26 @@ Join keys:
 
 Rehire limitation: actual_start_date is decorated per applicant_id (not per
 event), so applicants with multiple stints get the most recent start date on
-every event row. Correct for the latest event; imprecise for older rehires.';
+every event row. Correct for the latest event; imprecise for older rehires.
+
+OFFERING ENRICHMENT (2026-06-03):
+  department_code / department_id / department_name / offering / service /
+  is_offering_excluded / offering_source
+
+  Resolved by:
+    1. adp_pit          (bronze.adp_tenure_history, earliest snapshot >= event_date)
+    2. onboarding_dept  (portal_users.onboarding_department_id)
+    3. NULL
+
+  Rehires resolve correctly because the ADP lookup is event-anchored.
+  is_offering_excluded = TRUE for Interns / HRMS / Internal / Long-Term;
+  Net Gain reports should filter is_offering_excluded = FALSE.
+
+  Requires: idx_adp_tenure_applicant_snap on
+            bronze.adp_tenure_history (applicant_id, snapshot_date).
+  Source rejected: portal_associates.id is NOT a reliable proxy for
+                   portal_users.id (~32% of associate rows collide with
+                   unrelated user rows from different time periods).';
 
 
 -- ============================================================================
@@ -387,3 +506,32 @@ every event row. Correct for the latest event; imprecise for older rehires.';
 --    ) t ON TRUE
 --    WHERE h.event_date >= CURRENT_DATE - INTERVAL '90 days'
 --    ORDER BY h.event_at DESC;
+
+-- 9. Offering resolution coverage — what % of recent hires get an offering
+--    SELECT
+--      COUNT(*)                                          AS total,
+--      COUNT(offering)                                   AS with_offering,
+--      COUNT(*) FILTER (WHERE offering_source = 'adp_pit')         AS via_adp,
+--      COUNT(*) FILTER (WHERE offering_source = 'onboarding_dept') AS via_onboarding,
+--      COUNT(*) FILTER (WHERE offering_source IS NULL)             AS unresolved,
+--      ROUND(100.0 * COUNT(offering) / COUNT(*), 1)      AS pct_with_offering
+--    FROM silver.v_hires_unified
+--    WHERE event_date >= CURRENT_DATE - INTERVAL '90 days';
+
+-- 10. Offering distribution on Net Gain eligible hires (last 90 days)
+--    SELECT offering, service, COUNT(*)
+--    FROM silver.v_hires_unified
+--    WHERE event_date >= CURRENT_DATE - INTERVAL '90 days'
+--      AND is_offering_excluded = FALSE
+--    GROUP BY 1, 2
+--    ORDER BY 3 DESC;
+
+-- 11. Rehires sanity check — same applicant, different events, expect
+--     potentially different offerings if they switched dept between stints
+--    SELECT applicant_id, event_date, event_id, offering, offering_source
+--    FROM silver.v_hires_unified
+--    WHERE applicant_id IN (
+--      SELECT applicant_id FROM silver.v_hires_unified
+--      GROUP BY 1 HAVING COUNT(*) > 1
+--    )
+--    ORDER BY applicant_id, event_at;

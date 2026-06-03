@@ -33,11 +33,30 @@
 --           Rescued records still have NULL position_id, position_key,
 --           position_title, is_pipeline, and recruiter_name — there is no
 --           requisition by design. Tracked as a known limitation.
+--         : 2026-06-03 — Added offering enrichment (department_code, offering,
+--           service, is_offering_excluded, offering_source). Resolves the
+--           department-at-termination via a LATERAL lookup into
+--           bronze.adp_tenure_history (latest snapshot on/before
+--           termination_date); falls back to onboarding_department_id (already
+--           pulled by user_department_fallback CTE). Joined to
+--           silver.v_department_offering for the offering label.
+--           NOTE: bronze.portal_associates was considered and rejected as a
+--           source for current placement — its `id` column overlaps with
+--           portal_users.id only by numeric coincidence (~32% of associate
+--           rows reference different humans from different time periods, e.g.,
+--           an associate record created in 2021 colliding with a user created
+--           in 2026). Use adp_tenure_history.applicant_id as the linkage.
 --
--- ⚠ PREREQUISITE — run this index before deploying the view:
+-- ⚠ PREREQUISITES — run these indexes before deploying the view:
 --   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ajl_applicant_id
 --     ON bronze.portal_applicant_job_listings (applicant_id, created_at DESC);
 --   Without this index, the ajl_fallback CTE will seq-scan a 1 GB table.
+--
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_adp_tenure_applicant_snap
+--     ON bronze.adp_tenure_history (applicant_id, snapshot_date);
+--   Required by the offering-enrichment LATERAL (1.16M rows would otherwise
+--   seq-scan per termination row). Shared with v_hires_unified — first deploy
+--   of either view creates it; subsequent deploys are no-ops via IF NOT EXISTS.
 -- ============================================================================
 -- DESIGN NOTES:
 --   Grain      : One row per termination event
@@ -87,6 +106,33 @@
 --                and may need to be excluded from some reports. Decision pending.
 --                Callers can apply: WHERE is_pipeline = FALSE
 --
+--   OFFERING ENRICHMENT (added 2026-06-03):
+--     Seven columns at the end of the SELECT carry the Net Gain offering
+--     classification for each termination event:
+--
+--       department_code, department_id, department_name, offering, service,
+--       is_offering_excluded, offering_source
+--
+--     Resolution chain (per event):
+--       1. ADP point-in-time (`offering_source = 'adp_pit'`):
+--          LATERAL into bronze.adp_tenure_history, latest snapshot where
+--          (applicant_id = cu.applicant_id AND snapshot_date <= termination_date).
+--          This reflects the department the employee was paid in during their
+--          final pay period.
+--       2. Onboarding department fallback (`offering_source = 'onboarding_dept'`):
+--          udf.onboarding_department_id (from the user_department_fallback CTE)
+--          when ADP returns nothing. Used for pre-2025 terminations and
+--          never-started records.
+--       3. NULL: no resolution available.
+--
+--     is_offering_excluded is the OFFERING-level exclusion (TRUE for
+--     Interns / HRMS / Internal / Long-Term). Distinct from the existing
+--     is_excluded column on this view (which is reason-based — TRUE for
+--     termination_reason_id = 13 "Never started / delayed"). Net Gain
+--     reports should filter BOTH:
+--       WHERE is_excluded = FALSE
+--         AND is_offering_excluded = FALSE
+--
 --   Duplicate user guard:
 --                bronze.portal_users has ~588 cases where two records share an
 --                applicant_id. canonical_users CTE resolves to one row per
@@ -135,12 +181,16 @@
 -- ============================================================================
 
 
--- ── Step 0: Index prerequisite ────────────────────────────────────────────
--- Run this before the view. CONCURRENTLY avoids locking the table.
--- Safe to re-run; IF NOT EXISTS is idempotent.
+-- ── Step 0: Index prerequisites ───────────────────────────────────────────
+-- Run these before the view. CONCURRENTLY avoids locking the table.
+-- Safe to re-run; IF NOT EXISTS is idempotent. The ADP index is shared with
+-- v_hires_unified — first deploy of either view creates it.
 --
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ajl_applicant_id
   ON bronze.portal_applicant_job_listings (applicant_id, created_at DESC);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_adp_tenure_applicant_snap
+  ON bronze.adp_tenure_history (applicant_id, snapshot_date);
 
 
 -- ── Step 1: Deploy the view ───────────────────────────────────────────────
@@ -325,7 +375,24 @@ SELECT
     -- Identical to termination_created_at; prefer termination_created_at
     -- in new queries.
     t.created_at                                AS record_created_at,
-    t.updated_at                                AS record_updated_at
+    t.updated_at                                AS record_updated_at,
+
+    -- ── Offering enrichment ───────────────────────────────────────────────
+    -- See header "OFFERING ENRICHMENT" for the full resolution story.
+    -- Resolved department code first (ADP PIT at termination, then onboarding
+    -- fallback from user_department_fallback CTE); everything else is joined
+    -- from v_department_offering on department_code.
+    COALESCE(adp_pit.dept_code, onboard_dept.code)  AS department_code,
+    vdo.department_id,
+    vdo.department_name,
+    vdo.offering,
+    vdo.service,
+    COALESCE(vdo.is_excluded, FALSE)                AS is_offering_excluded,
+    CASE
+        WHEN adp_pit.dept_code  IS NOT NULL THEN 'adp_pit'
+        WHEN onboard_dept.code  IS NOT NULL THEN 'onboarding_dept'
+        ELSE                                         NULL
+    END                                             AS offering_source
 
 FROM bronze.portal_terminations t
 
@@ -358,12 +425,37 @@ LEFT JOIN bronze.portal_clients c
 -- User-department fallback: rescues terminations whose applicant chain
 -- dead-ends (no a.client_id, no r.client_id). Joined unconditionally —
 -- the COALESCE in the SELECT picks the higher-priority source when
--- multiple resolve.
+-- multiple resolve. Also supplies onboarding_department_id for the
+-- offering-enrichment fallback below.
 LEFT JOIN user_department_fallback udf
     ON udf.user_id = t.user_id
 
 LEFT JOIN recruiters rec
     ON rec.id = a.recruiter_id
+
+-- ── Offering enrichment joins ─────────────────────────────────────────────
+-- 1. ADP point-in-time: latest snapshot at or before the termination_date
+--    for the applicant. Reflects the department where they were paid in
+--    their final pay period. Requires idx_adp_tenure_applicant_snap.
+LEFT JOIN LATERAL (
+    SELECT TRIM(adp.home_department_code)       AS dept_code
+    FROM bronze.adp_tenure_history adp
+    WHERE adp.applicant_id   = cu.applicant_id
+      AND adp.snapshot_date <= t.termination_date
+    ORDER BY adp.snapshot_date DESC
+    LIMIT 1
+) adp_pit ON TRUE
+
+-- 2. Onboarding department fallback. udf.onboarding_department_id is already
+--    resolved by the user_department_fallback CTE above — just expose the
+--    portal_departments.code for the offering join.
+LEFT JOIN bronze.portal_departments onboard_dept
+    ON onboard_dept.id = udf.onboarding_department_id
+
+-- 3. Offering crosswalk. Joined by the resolved department code; vdo is
+--    NULL for both columns when neither ADP nor onboarding resolve.
+LEFT JOIN silver.v_department_offering vdo
+    ON vdo.department_code = COALESCE(adp_pit.dept_code, onboard_dept.code)
 
 
 -- ══════════════════════════════════════════════════════════════════════════
@@ -423,13 +515,33 @@ Portal 1: position_id = order_id (1:1 — same requisition).
 Portal 2: position_id ≠ order_id (1:many — add UNION ALL branch when Cajetan is live).
 
 Key filters callers should apply:
-  AND is_excluded = FALSE   -- removes "Never started / delayed"
-  AND is_pipeline = FALSE   -- removes pipeline/bench reqs (decision pending)
+  AND is_excluded = FALSE           -- removes "Never started / delayed"
+  AND is_pipeline = FALSE           -- removes pipeline/bench reqs (decision pending)
+  AND is_offering_excluded = FALSE  -- removes Interns / HRMS / Internal / Long-Term
 
 Join keys:
   position_id → v_positions_unified.position_id
   order_id    → v_orders_unified.order_id
-  (source_system, position_id) for cross-view joins';
+  (source_system, position_id) for cross-view joins
+
+OFFERING ENRICHMENT (2026-06-03):
+  department_code / department_id / department_name / offering / service /
+  is_offering_excluded / offering_source
+
+  Resolved by:
+    1. adp_pit          (bronze.adp_tenure_history, latest snapshot <= termination_date)
+    2. onboarding_dept  (udf.onboarding_department_id from user_department_fallback CTE)
+    3. NULL
+
+  is_offering_excluded = TRUE for Interns / HRMS / Internal / Long-Term;
+  Net Gain reports should filter is_offering_excluded = FALSE in ADDITION TO
+  is_excluded = FALSE (those track different exclusion concepts).
+
+  Requires: idx_adp_tenure_applicant_snap on
+            bronze.adp_tenure_history (applicant_id, snapshot_date).
+  Source rejected: portal_associates.id is NOT a reliable proxy for
+                   portal_users.id (~32% of associate rows collide with
+                   unrelated user rows from different time periods).';
 
 
 -- ============================================================================
@@ -502,3 +614,24 @@ Join keys:
 --      AND is_excluded    = FALSE
 --      AND entry_lag_days > 6
 --    ORDER BY entry_lag_days DESC;
+
+-- 9. Offering resolution coverage — what % of recent terminations get an offering
+--    SELECT
+--      COUNT(*)                                                    AS total,
+--      COUNT(offering)                                             AS with_offering,
+--      COUNT(*) FILTER (WHERE offering_source = 'adp_pit')         AS via_adp,
+--      COUNT(*) FILTER (WHERE offering_source = 'onboarding_dept') AS via_onboarding,
+--      COUNT(*) FILTER (WHERE offering_source IS NULL)             AS unresolved,
+--      ROUND(100.0 * COUNT(offering) / COUNT(*), 1)                AS pct_with_offering
+--    FROM silver.v_terminations_unified
+--    WHERE termination_date >= CURRENT_DATE - INTERVAL '90 days'
+--      AND is_excluded = FALSE;
+
+-- 10. Offering distribution on Net Gain eligible terminations (last 90 days)
+--    SELECT offering, service, termination_category, COUNT(*)
+--    FROM silver.v_terminations_unified
+--    WHERE termination_date >= CURRENT_DATE - INTERVAL '90 days'
+--      AND is_excluded          = FALSE
+--      AND is_offering_excluded = FALSE
+--    GROUP BY 1, 2, 3
+--    ORDER BY 1, 4 DESC;
