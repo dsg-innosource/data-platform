@@ -46,6 +46,15 @@
 --           rows reference different humans from different time periods, e.g.,
 --           an associate record created in 2021 colliding with a user created
 --           in 2026). Use adp_tenure_history.applicant_id as the linkage.
+--         : 2026-06-03 — Added INCLUDE (requisition_id) to idx_ajl_applicant_id
+--           so the ajl_fallback CTE can run as an index-only scan (no heap
+--           fetches). Migration on an existing deployment:
+--             CREATE INDEX CONCURRENTLY idx_ajl_applicant_id_v2
+--               ON bronze.portal_applicant_job_listings (applicant_id, created_at DESC)
+--               INCLUDE (requisition_id);
+--             DROP INDEX CONCURRENTLY bronze.idx_ajl_applicant_id;
+--             ALTER INDEX bronze.idx_ajl_applicant_id_v2 RENAME TO idx_ajl_applicant_id;
+--           Fresh deploys (no existing index) just run the Step 0 statement.
 --
 -- ⚠ PREREQUISITES — run these indexes before deploying the view:
 --   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ajl_applicant_id
@@ -186,8 +195,18 @@
 -- Safe to re-run; IF NOT EXISTS is idempotent. The ADP index is shared with
 -- v_hires_unified — first deploy of either view creates it.
 --
+-- The AJL index includes requisition_id as a covered column so the
+-- ajl_fallback CTE can satisfy itself entirely from the index (no heap
+-- fetches). Drops query time on the AJL fallback substantially.
+--
+-- ⚠ ON EXISTING DEPLOYMENTS: IF NOT EXISTS will SKIP creation when an index
+-- of the same name already exists, even if the INCLUDE clause differs. To
+-- pick up the INCLUDE change, build a new index alongside the old one and
+-- swap them — see the file header for the migration steps.
+--
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ajl_applicant_id
-  ON bronze.portal_applicant_job_listings (applicant_id, created_at DESC);
+  ON bronze.portal_applicant_job_listings (applicant_id, created_at DESC)
+  INCLUDE (requisition_id);
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_adp_tenure_applicant_snap
   ON bronze.adp_tenure_history (applicant_id, snapshot_date);
