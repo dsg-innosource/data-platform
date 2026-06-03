@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orchestration"
+version = "0.1.0"
+description = "InnoSource Dagster Cloud orchestration project"
+authors = [{name = "Sean Beal", email = "sbeal@innosource.com"}]
+requires-python = ">=3.11"
+
+dependencies = [
+    "dagster>=1.9",
+    "dagster-cloud>=1.9",
+    "dagster-postgres>=0.25",
+    # Local dependency on the reporting framework — pip-install -e ../reporting
+    # alongside this project so this import resolves.
+    "reporting",
+]
+
+[project.optional-dependencies]
+dev = [
+    "dagster-webserver>=1.9",
+    "pytest>=7.4",
+]
+
+[tool.dagster]
+module_name = "orchestration.definitions"
+code_location_name = "innosource_data_platform"
+
+[tool.setuptools.packages.find]
+exclude = ["tests*"]
