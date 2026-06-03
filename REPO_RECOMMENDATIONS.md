@@ -676,3 +676,34 @@ You don't need dbt today. But knowing the migration path lets you make decisions
 - Write transforms as **standalone SQL files** (not embedded in Python) — these become dbt models with minimal changes
 - Use **Dagster** for orchestration — it's the one piece that survives the dbt migration unchanged
 - Keep SQL **in the repo** — version-controlled SQL is the foundation of both approaches
+
+---
+
+## Addendum: Production Reports as a First-Class Concern (April 2026)
+
+When this document was originally written, "reports" meant Metabase dashboards.
+That has expanded — in April 2026, daily and weekly **email reports** (recruiter
+activity, position status, terminations) joined the data platform as a sixth
+type of asset alongside processes, Metabase SQL, database objects, transforms,
+and Dagster orchestration.
+
+**Where it lives.** `reporting/` (top-level), with the same shape as the existing
+process directories: a clear lifecycle, version-controlled SQL, parameterized
+config, and tests. Unlike a single process, the reporting framework is a shared
+abstraction — `reporting/framework/` defines the lifecycle every report inherits
+from, and `reporting/reports/<name>/` packages each routine. The architectural
+spec lives at `reporting/routines/_framework.md`.
+
+**Why it's in this repo and not elsewhere.** Reports query views defined in
+`database/views/silver/`. Schema changes to those views and report changes that
+depend on them belong in the same PR. Reports are also a Data as a Product
+concern — they get DP-IDs and join `metabase/catalog.yaml`.
+
+**How it integrates with Dagster.** Each report is a Dagster asset in
+`orchestration/orchestration/assets/reports/<name>.py`. The asset is a thin
+wrapper that calls `Report.run()` and emits `RunResult` as the materialization
+output, so reports show up in the Dagster lineage view downstream of the silver
+views they depend on. Scheduling, retries, and failure alerting are inherited
+from Dagster Cloud — no separate cron infrastructure.
+
+**Migration tracker.** `reporting/MIGRATION.md` is the live document.

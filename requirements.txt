@@ -21,6 +21,18 @@ pyyaml           # YAML parsing
 openpyxl         # Excel file reading (for pandas Excel support)
 xlrd             # Excel file reading (for .xls files)
 
+# Reporting framework
+jinja2           # HTML templating for reports
+requests         # Power Automate webhook calls
+anthropic        # Narrative refinement for report insights
+lxml             # HTML parsing in render-test assertions
+
+# Orchestration (Dagster Cloud)
+dagster
+dagster-cloud
+dagster-postgres
+dagster-webserver  # local Dagster UI for development (`dagster dev`)
+
 # Development and testing
 pytest
 pytest-cov

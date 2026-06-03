@@ -1,0 +1,25 @@
+{# PDF source template for the Daily Recruiter Activity report.
+
+Spec: routines/recruiter-activity.md § 8.1, § 8.3, § 8.4, § 8.5
+
+Implementation reference for Phase 2 — what this template must produce:
+
+  Cover top      → "Daily Recruiter Activity" title + report date
+  Section 02     → header + 5 activity-number cards + 4-cell KPI strip + 1 callout
+  Section 03     → header + recruiter table (sorted) + 0-2 callouts
+  Footer         → "InnoSource Data Governance · Daily Recruiter Activity ·
+                    Source: silver.v_applicant_activity_events ·
+                    Confidential — InnoSource Internal Use · Page 1"
+
+Base CSS comes from `reporting/styles/inno_source_report_style_guide.md` (loaded
+via `framework.style.base_css()`). The template appends an "Activity Card
+Extension" CSS block defining `.activity-cards`, `.activity-card`,
+`.activity-number`, and `.activity-label` (large-number cards unique to § 02).
+
+The 8 visual invariants in spec § 9 are enforced by
+`tests/reports/test_recruiter_activity_render.py` — any template change that
+violates one fails CI.
+
+Template inputs: see spec § 8.3.
+#}
+{# TODO: implement per spec § 8.1 #}

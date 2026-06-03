@@ -6,13 +6,14 @@ Context for AI assistants working on this repository. For the human-readable pro
 
 This is InnoSource's data platform — the central repository for data governance, analytics, and data pipeline work. It's owned by a small data governance/analytics team (3 people, led by Sean Beal) that follows a **Data as a Product** methodology.
 
-The repo contains five types of things:
+The repo contains six types of things:
 
 1. **Data processes** — Python ETL pipelines in self-contained folders
 2. **Metabase SQL** — Version-controlled SQL for foundational Metabase models
 3. **Database objects** — Version-controlled views, and eventually stored procedures, organized by object type in `database/`
 4. **Silver layer transforms** — Active materialization scripts (future: dbt models) in `transforms/`
-5. **Dagster orchestration** — Pipeline definitions, schedules, and sensors
+5. **Production reports** — Daily/weekly operational PDF+email reports in `reporting/` (framework + per-report packages)
+6. **Dagster orchestration** — Pipeline definitions, schedules, and sensors in `orchestration/`
 
 ## Architecture Decisions (Current)
 
@@ -52,13 +53,14 @@ When creating a new process, follow this exactly. The `process.py` naming conven
 
 ### SQL files
 
-There are three homes for SQL in this repo, each with a distinct purpose:
+There are four homes for SQL in this repo, each with a distinct purpose:
 
 - **`database/`** — Static database object definitions (views, future stored procedures). Organized by object type and schema layer (e.g., `database/views/silver/`). These are version-controlled DDL, not active processes.
 - **`transforms/bronze_to_silver/`** — Active materialization scripts that Dagster executes to create/update silver tables. These will eventually become dbt models. Do NOT embed transform SQL in Python unless the transform requires Python logic (pandas, API calls, etc.).
 - **`metabase/models/`** — Source-of-truth definitions for Metabase base models. When modifying, update both the `.sql` file and the Metabase model.
+- **`reporting/src/reporting/reports/<name>/queries.py`** — Parameterized SQL for production reports. These are read-only against silver-layer views and never modify state.
 
-**Key distinction:** Views and other static DB objects go in `database/`, not `transforms/`. A view is a stored query definition, not a transform process.
+**Key distinction:** Views and other static DB objects go in `database/`, not `transforms/`. A view is a stored query definition, not a transform process. Report queries reference but never define those views.
 
 ### Configuration
 
@@ -116,6 +118,26 @@ Key concepts:
 
 When adding a new scheduled pipeline, create an asset function, add it to the appropriate group, and add/update a schedule.
 
+## Reporting Framework
+
+Production reports (daily recruiter activity, daily position status, weekly terminations) live in `reporting/`. The framework standardizes the lifecycle every report shares: window resolution → SQL fetch → deterministic callout rules → optional Anthropic narrative refinement → Jinja2 templates → PDF render → Power Automate email.
+
+Key files:
+- `reporting/routines/_framework.md` — shared lifecycle spec (read this first)
+- `reporting/routines/<name>.md` — per-report spec (rule tables, template inputs, dist list)
+- `reporting/src/reporting/framework/` — shared implementation
+- `reporting/src/reporting/reports/<name>/` — per-report code
+- `orchestration/orchestration/assets/reports/<name>.py` — Dagster asset wrapper
+
+When making changes to a report:
+- Rule logic and thresholds go in `<name>/callouts.py`
+- SQL goes in `<name>/queries.py`
+- Visual templates go in `<name>/templates/*.j2`
+- Recipients go in `reporting/config/recipients.md` (NOT inline in code)
+- Tests in `reporting/tests/reports/test_<name>_*.py` are required for any rule change
+
+The interactive Claude prompts at `cowork/prompts/reporting/*.md` (in the cowork workspace, not this repo) are kept as design references and ad-hoc debug tools — production runs flow through the framework instead.
+
 ## Key Files
 
 | File | Purpose |
@@ -125,6 +147,9 @@ When adding a new scheduled pipeline, create an asset function, add it to the ap
 | `shared/database.yaml` | Shared database connection configuration |
 | `.env` | Local environment variables (gitignored) |
 | `requirements.txt` | Python dependencies |
+| `reporting/MIGRATION.md` | Reporting framework phase tracker — what's done, what's next |
+| `reporting/routines/_framework.md` | Reporting framework architectural spec |
+| `orchestration/pyproject.toml` | Dagster project config (module_name, code_location_name) |
 
 ## ClickUp Integration
 
@@ -136,4 +161,4 @@ Data Governance documentation lives in ClickUp Docs (doc ID: 88p1h-7051), NOT in
 
 ---
 
-**Last Updated:** February 2026
+**Last Updated:** April 2026 — added reporting/ framework and orchestration/ Dagster project. Framework spec at `reporting/routines/_framework.md`; phase tracker at `reporting/MIGRATION.md`.

@@ -1,0 +1,28 @@
+{# Email body template for the Daily Recruiter Activity report.
+
+Spec: routines/recruiter-activity.md § 8.2, § 8.3, § 8.4, § 8.5
+
+Implementation reference for Phase 2 — what this template must produce:
+
+  Header bar     → title + Data Governance attribution + report date
+  Title block    → "Summary"
+  KPI strip      → 4 cells: Screens, OAR, Screen → Inno, Hires (per § 8.4 colors)
+  Insights       → 1–3 callout divs (per § 7.1 rules + § 8.5 colors)
+  Volume Summary → small two-column table
+  Footer         → "Full report attached as PDF" + Data Governance attribution
+
+Mobile responsive — at viewport widths ≤ 600 px the 4-cell KPI strip wraps to a
+2×2 grid via an embedded `@media` block. All overrides use `!important` to win
+over inline styles on narrow screens. Apple Mail / iOS Mail / Gmail mobile
+respect the `<style>` block; desktop clients ignore it and use the inline styles.
+
+Hard rules the framework's pre-send guards enforce (`framework.guards`):
+  - No HTML comments (<!-- … -->) anywhere in the body — Outlook renders them visible
+  - No \! sequences (bash heredoc artifacts)
+  - All Jinja markers must render
+  - Body length must exceed 100 characters
+  - No unsubstituted [PLACEHOLDER] markers
+
+Template inputs: see spec § 8.3.
+#}
+{# TODO: implement per spec § 8.2 #}

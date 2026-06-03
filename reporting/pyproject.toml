@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reporting"
+version = "0.2.0"
+description = "InnoSource production reporting framework — daily/weekly operational reports"
+authors = [{name = "Sean Beal", email = "sbeal@innosource.com"}]
+requires-python = ">=3.11"
+
+dependencies = [
+    "psycopg2-binary>=2.9",
+    "jinja2>=3.1",
+    "requests>=2.31",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    "click>=8.1",
+    "anthropic>=0.39",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "lxml>=4.9",        # for parsing rendered HTML in render tests
+]
+
+[project.scripts]
+reporting = "reporting.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["reporting*"]
+exclude = ["tests*", "routines*", "styles*", "tools*", "config*"]

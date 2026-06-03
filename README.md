@@ -27,6 +27,10 @@ Version-controlled SQL definitions for database views, and eventually stored pro
 
 Active materialization scripts for bronze → silver transformations in [transforms/](transforms/). These are executed by Dagster on a schedule. Static database objects like views belong in `database/`, not here.
 
+### Production Reports
+
+Daily and weekly operational reports — recruiter activity, position status, terminations — that get emailed each morning. The reporting framework lives in [reporting/](reporting/) and runs as Dagster assets. Each report is a structured pipeline (deterministic SQL + rule-based callouts + LLM-refined narrative + HTML/PDF rendering + Power Automate email) rather than a Claude prompt. See [reporting/routines/_framework.md](reporting/routines/_framework.md) for the architecture and [reporting/routines/recruiter-activity.md](reporting/routines/recruiter-activity.md) for the first migrated report.
+
 ### Orchestration
 
 Pipeline scheduling, monitoring, and alerting via [Dagster Cloud](https://dagster.io). Dagster definitions live in [orchestration/](orchestration/). See [docs/orchestration/dagster-setup.md](docs/orchestration/dagster-setup.md) for configuration details.
@@ -34,10 +38,12 @@ Pipeline scheduling, monitoring, and alerting via [Dagster Cloud](https://dagste
 ## Architecture
 
 ```
-Source Systems → Airbyte (EL) → PostgreSQL Bronze → Transforms (SQL) → PostgreSQL Silver → Metabase
-                                                     ↑                                      ↑
-                                                 Dagster Cloud                          Dashboards
-                                                 (orchestrates)                         & Reports
+Source Systems → Airbyte (EL) → PostgreSQL Bronze → Transforms (SQL) → PostgreSQL Silver → Metabase Dashboards
+                                                     ↑                          │
+                                                 Dagster Cloud                  │
+                                                 (orchestrates)                 ↓
+                                                                        Production Reports
+                                                                        (PDF + email)
 ```
 
 **Stack:** PostgreSQL (DO) · Airbyte (ELT) · Dagster Cloud (orchestration) · Metabase (visualization) · GitHub (version control)
