@@ -7,7 +7,7 @@
 --           is_new_logo_win flags account's FIRST closed-won (one row per account
 --           gets the flag, the rest are expansion).
 --           Period flags (in_*) make it trivial to filter for KPI cards.
--- Depends : silver.v_sales_users, silver.v_sales_accounts
+-- Depends : silver.v_sales_users, silver.v_sales_accounts, bronze.sf_Campaign
 -- ============================================================================
 
 DROP VIEW IF EXISTS silver.v_sales_opportunities;
@@ -51,6 +51,9 @@ SELECT
     -- attributes
     o."Type"                        AS opportunity_type,
     o."LeadSource"                  AS lead_source,
+    -- primary campaign source (single campaign per opp; see v_sales_campaigns)
+    o."CampaignId"                  AS campaign_id,
+    cmp."Name"                      AS campaign_name,
     o."NextStep"                    AS next_step,
     o."Description"                 AS description,
     o."Loss_Reason__c"              AS loss_reason,
@@ -97,6 +100,7 @@ SELECT
 FROM bronze."sf_Opportunity"     o
 LEFT JOIN silver.v_sales_accounts a ON a.account_id = o."AccountId"
 LEFT JOIN silver.v_sales_users    u ON u.user_id    = o."OwnerId"
+LEFT JOIN bronze."sf_Campaign"    cmp ON cmp."Id"   = o."CampaignId"
 WHERE o."IsDeleted" = false;
 
 COMMENT ON VIEW silver.v_sales_opportunities IS
