@@ -26,7 +26,9 @@
 -- ============================================================================
 -- DESIGN NOTES:
 --   Grain      : One row per "Hired" funnel event
---                (bronze.portal_requisition_statistics.requisition_statistic_type_id = 6)
+--                (bronze.portal_requisition_statistics.requisition_statistic_type_id = 6),
+--                AFTER collapsing duplicate same-day events for the same
+--                (applicant_id, requisition_id) — see the hire_events CTE.
 --   Row key    : event_id (portal_requisition_statistics.id) — the
 --                differentiating grain for applicants hired more than once.
 --   Vocabulary : Cajetan (Portal 2) field naming throughout.
@@ -61,9 +63,16 @@
 --
 --   Multiple hires per applicant:
 --     Yes. An applicant can appear on multiple rows when hired onto
---     different requisitions (or rehired onto the same one). event_id
---     is the natural differentiator. For "latest hire per applicant":
+--     different requisitions, or rehired onto the same one on a DIFFERENT
+--     day. event_id is the natural differentiator. For "latest hire per
+--     applicant":
 --       ROW_NUMBER() OVER (PARTITION BY applicant_id ORDER BY event_at DESC) = 1
+--
+--     Duplicate same-day events for the same (applicant_id, requisition_id)
+--     are collapsed in the hire_events CTE (the earliest is kept). Those are
+--     data-entry duplicates — e.g. two recruiters both marking a class hire
+--     "Hired" — not distinct hires, and they inflated COUNT(*) over this view
+--     before this fix (Alliant Energy 3/16 class: 4 rows per associate → 1).
 --
 --     LIMITATION — rehires: actual_start_date is decorated from
 --     canonical_users, which collapses portal_users to one row per
@@ -199,7 +208,37 @@ CREATE VIEW silver.v_hires_unified AS
 -- ── Portal 1 branch ───────────────────────────────────────────────────────
 WITH
 
--- 1. Resolve duplicate portal_users → one canonical row per applicant_id.
+-- 1. Collapse duplicate same-day "Hired" events to one canonical row.
+--    Portal 1 lets more than one "Hired" funnel record be logged for the same
+--    applicant on the same requisition on the same day — e.g. a class hire
+--    where two recruiters each mark the roster "Hired" (and sometimes re-mark
+--    it minutes later). Those are duplicate data entries, NOT distinct hires,
+--    and they inflate every COUNT(*) over this view (the 3/16 Alliant Energy
+--    class produced 4 rows per associate). De-dupe key:
+--      (applicant_id, requisition_id, DATE(created_at)).
+--    Keep the earliest event of the day (the original decision-to-hire),
+--    which also fixes the recruiter attribution to whoever logged it first.
+--
+--    This is deliberately SAME-DAY only. A genuine rehire onto the same
+--    requisition on a LATER day stays a separate row — that preserves the
+--    multi-event grain this view is designed around (see "Multiple hires per
+--    applicant" below). Hires onto a DIFFERENT requisition are untouched.
+hire_events AS (
+    SELECT *
+    FROM (
+        SELECT
+            rs.*,
+            ROW_NUMBER() OVER (
+                PARTITION BY rs.applicant_id, rs.requisition_id, DATE(rs.created_at)
+                ORDER BY rs.created_at, rs.id
+            ) AS dup_rn
+        FROM bronze.portal_requisition_statistics rs
+        WHERE rs.requisition_statistic_type_id = 6   -- Hired
+    ) ranked
+    WHERE dup_rn = 1
+),
+
+-- 2. Resolve duplicate portal_users → one canonical row per applicant_id.
 --    Same logic as v_terminations_unified.canonical_users:
 --      prefers is_active = TRUE, then most recently created record.
 --    Used to decorate each hire event with actual_start_date AND to supply
@@ -218,7 +257,7 @@ canonical_users AS (
         created_at  DESC
 ),
 
--- 2. Recruiter display names — recruiters are also portal_users rows.
+-- 3. Recruiter display names — recruiters are also portal_users rows.
 --    NO exclusions here (unlike v_applicant_activity_events). This is a
 --    fact view; every hire event counts regardless of who logged it.
 recruiters AS (
@@ -304,7 +343,7 @@ SELECT
         ELSE                                         NULL
     END                                             AS offering_source
 
-FROM bronze.portal_requisition_statistics rs
+FROM hire_events rs
 
 INNER JOIN bronze.portal_requisition_statistic_types rst
     ON rst.id = rs.requisition_statistic_type_id
@@ -349,7 +388,8 @@ LEFT JOIN bronze.portal_departments onboard_dept
 LEFT JOIN silver.v_department_offering vdo
     ON vdo.department_code = COALESCE(adp_pit.dept_code, onboard_dept.code)
 
-WHERE rs.requisition_statistic_type_id = 6   -- Hired
+-- The Hired filter (requisition_statistic_type_id = 6) now lives in the
+-- hire_events CTE, alongside the same-day de-duplication.
 
 
 -- ══════════════════════════════════════════════════════════════════════════
@@ -372,7 +412,13 @@ WHERE rs.requisition_statistic_type_id = 6   -- Hired
 
 COMMENT ON VIEW silver.v_hires_unified IS
 'Unified hires view. One row per Hired funnel event
-(portal_requisition_statistics.requisition_statistic_type_id = 6).
+(portal_requisition_statistics.requisition_statistic_type_id = 6), after
+collapsing duplicate same-day events for the same (applicant_id,
+requisition_id) — see the hire_events CTE. Duplicate same-day "Hired"
+entries (e.g. two recruiters marking a class hire) are data-entry
+artifacts, not distinct hires, and were inflating COUNT(*) over this view.
+Genuine rehires onto the same requisition on a different day, and hires
+onto a different requisition, remain separate rows.
 Uses Cajetan (Portal 2) vocabulary; Portal 1 fields aliased to match.
 
 TWO DATES:
@@ -438,6 +484,22 @@ OFFERING ENRICHMENT (2026-06-03):
 --    FROM silver.v_hires_unified
 --    GROUP BY 1, 2
 --    HAVING COUNT(*) > 1;
+
+-- 2b. Same-day de-dup held — no (applicant, order, event_date) appears twice.
+--     Expect zero rows. Multi-DAY rehires onto the same order are allowed and
+--     will NOT show up here (different event_date).
+--    SELECT applicant_id, order_id, event_date, COUNT(*)
+--    FROM silver.v_hires_unified
+--    GROUP BY 1, 2, 3
+--    HAVING COUNT(*) > 1;
+
+-- 2c. Alliant Energy 3/16 class regression check — expect 10, not 40.
+--    SELECT COUNT(*)
+--    FROM silver.v_hires_unified
+--    WHERE client_name ILIKE '%Alliant%'
+--      AND actual_start_date >= '2026-03-01'
+--      AND actual_start_date <  '2026-04-01'
+--      AND is_offering_excluded = FALSE;
 
 -- 3. Start-date resolution rate — how many hires have an actual_start_date
 --    SELECT
