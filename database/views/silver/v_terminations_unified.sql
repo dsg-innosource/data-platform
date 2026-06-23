@@ -68,7 +68,9 @@
 --   of either view creates it; subsequent deploys are no-ops via IF NOT EXISTS.
 -- ============================================================================
 -- DESIGN NOTES:
---   Grain      : One row per termination event
+--   Grain      : One row per termination event, AFTER collapsing duplicate
+--                same-day termination records for the same person — see the
+--                terminations_deduped CTE.
 --   Vocabulary : Cajetan (Portal 2) field naming throughout.
 --                Portal 1 source fields aliased to match.
 --
@@ -147,6 +149,14 @@
 --                applicant_id. canonical_users CTE resolves to one row per
 --                applicant_id — prefers is_active = TRUE, then latest created_at.
 --
+--   Duplicate termination guard:
+--                bronze.portal_terminations contains same-day double-submits
+--                (~72 groups / ~76 extra rows) — the same termination entered
+--                twice for one person on one day. terminations_deduped CTE
+--                collapses these to one row per (user_id, termination_date),
+--                keeping the most-recently-updated copy. Without it, COUNT(*)
+--                over-counts terminations and Net Gain understates.
+--
 -- Portal 1 → Cajetan field mapping (reference for future UNION branch):
 --   portal_requisitions.id               → orders.id / positions.id  (order_id / position_id)
 --   portal_requisitions.requisition_key  → positions.legacy_requisition_id (position_key)
@@ -223,6 +233,33 @@ CREATE VIEW silver.v_terminations_unified AS
 
 -- ── Portal 1 branch ───────────────────────────────────────────────────────
 WITH
+
+-- 0. Collapse duplicate termination records to one row per termination.
+--    Portal 1 lets the same termination be submitted more than once for the
+--    same person on the same day (a double-submit — consecutive ids, created
+--    within seconds, otherwise identical). Those are data-entry duplicates,
+--    NOT distinct terminations (you cannot be terminated from a placement
+--    twice on the same calendar day), and they inflate every COUNT(*) over
+--    this view. ~0.2% of rows, but it compounds the Net Gain math (terms are
+--    subtracted from hires). Mirrors the same-day de-dup in v_hires_unified.
+--    De-dupe key: (user_id, termination_date).
+--    Keep the most-recently-UPDATED row (then highest id) — a handful of these
+--    duplicates had the reason corrected on one copy after entry, and the
+--    edited copy is the authoritative one. For identical double-submits the
+--    tiebreak is moot.
+terminations_deduped AS (
+    SELECT *
+    FROM (
+        SELECT
+            t.*,
+            ROW_NUMBER() OVER (
+                PARTITION BY t.user_id, t.termination_date
+                ORDER BY t.updated_at DESC, t.id DESC
+            ) AS dup_rn
+        FROM bronze.portal_terminations t
+    ) ranked
+    WHERE dup_rn = 1
+),
 
 -- 1. Resolve duplicate portal_users → one canonical row per applicant_id.
 --    Prefers is_active = TRUE, then most recently created record.
@@ -413,7 +450,7 @@ SELECT
         ELSE                                         NULL
     END                                             AS offering_source
 
-FROM bronze.portal_terminations t
+FROM terminations_deduped t
 
 INNER JOIN bronze.portal_termination_reasons tr
     ON tr.id = t.termination_reason_id
