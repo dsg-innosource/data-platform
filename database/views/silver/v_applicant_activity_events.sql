@@ -1,7 +1,9 @@
 -- ============================================================
 -- silver.v_applicant_activity_events
 --
--- Grain: one row per funnel event (from portal_requisition_statistics)
+-- Grain: one row per funnel event (from portal_requisition_statistics), after
+--        collapsing duplicate same-day events of the same type for the same
+--        (applicant, requisition) — see the funnel_events CTE.
 -- Sources: portal_v1 only — structured for future portal_v2 union
 --
 -- Included event types:
@@ -35,9 +37,42 @@ DROP VIEW IF EXISTS silver.v_applicant_activity_events;
 
 CREATE VIEW silver.v_applicant_activity_events AS
 
-WITH recruiters AS (
-    -- Excludes specific users from recruiter resolution.
-    -- Their events are also dropped at the WHERE clause below.
+WITH
+
+-- Collapse duplicate same-day funnel events to one row per event.
+-- Portal 1 lets the same funnel action be logged more than once for the same
+-- applicant on the same requisition on the same day — usually one recruiter
+-- clicking the same action twice (>95% of duplicates are single-recruiter),
+-- sometimes two recruiters logging the same step on a shared class. Those are
+-- data-entry duplicates, NOT distinct actions, and they inflate every COUNT(*)
+-- over this view (e.g. Accept Offer ~14%, Client Interview ~5.5%, Hired ~5%).
+-- Mirrors the same-day de-dup in v_hires_unified / v_terminations_unified.
+-- De-dupe key: (applicant_id, requisition_id, event_type, DATE(created_at)) —
+-- event_type is in the key so distinct steps on the same day (a phone screen
+-- AND an offer) are NOT collapsed. Keep the earliest of the day (the original
+-- action), which also fixes recruiter attribution to whoever logged it first.
+-- The type filter and recruiter exclusion run INSIDE this CTE so the kept row
+-- is always an in-scope, non-excluded event.
+funnel_events AS (
+    SELECT *
+    FROM (
+        SELECT
+            rs.*,
+            ROW_NUMBER() OVER (
+                PARTITION BY rs.applicant_id, rs.requisition_id,
+                             rs.requisition_statistic_type_id, DATE(rs.created_at)
+                ORDER BY rs.created_at, rs.id
+            ) AS dup_rn
+        FROM bronze.portal_requisition_statistics rs
+        WHERE rs.requisition_statistic_type_id IN (2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13)
+          AND rs.created_by_recruiter_id NOT IN (441, 5673)  -- exclude: Becky Henke, Mason Dail
+    ) ranked
+    WHERE dup_rn = 1
+),
+
+recruiters AS (
+    -- Excludes specific users from recruiter resolution. Their events are
+    -- also dropped inside the funnel_events CTE above.
     SELECT
         u.id,
         u.first_name || ' ' || u.last_name AS recruiter_name,
@@ -117,7 +152,7 @@ SELECT
     (EXTRACT(isoyear FROM rs.created_at)::text || '-W'
         || LPAD(EXTRACT(week FROM rs.created_at)::text, 2, '0')) AS iso_week_label
 
-FROM bronze.portal_requisition_statistics rs
+FROM funnel_events rs
 JOIN  bronze.portal_requisition_statistic_types rst
         ON rst.id = rs.requisition_statistic_type_id
 LEFT JOIN bronze.portal_applicants a
@@ -128,8 +163,6 @@ LEFT JOIN bronze.portal_clients c
         ON c.id = COALESCE(r.client_id, a.client_id)
 LEFT JOIN recruiters rec
         ON rec.id = rs.created_by_recruiter_id
-
-WHERE rs.requisition_statistic_type_id IN (2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13)
-  AND rs.created_at >= DATE_TRUNC('year', CURRENT_DATE) - INTERVAL '2 years'
-  AND rs.created_by_recruiter_id NOT IN (441, 5673)  -- exclude: Becky Henke, Mason Dail
+-- The event-type filter and recruiter exclusion now live in the funnel_events
+-- CTE, alongside the same-day de-duplication.
 ;
