@@ -4,6 +4,14 @@
 --          Mirrors v_terminations_unified design for symmetry; the two views
 --          are intended to join on applicant_id (+ position_id) in reports.
 -- Created:  2026-04-17
+-- Modified: 2026-06-29 — Added a PENDING hire source + hire_confirmation_status
+--           column (see "PENDING HIRES" below). The view is no longer driven
+--           solely by the logged Hired event: candidates whose portal status
+--           is "Hired" (applicant_status_id = 5) with a start date set but no
+--           logged Hired event are now surfaced as 'pending' rows, UNION ALL'd
+--           into the existing event-backed ('confirmed') spine. Closes the
+--           hire-logging lag that hid whole started classes from "starting this
+--           week" reporting (GiftHealth 6/22 class — 11 started, 0 logged).
 -- Modified: 2026-06-03 — Added offering enrichment (department_code, offering,
 --           service, is_offering_excluded, offering_source). Resolves the
 --           department-at-hire-time via a LATERAL lookup into
@@ -17,6 +25,12 @@
 --           rows reference different humans from different time periods, e.g.,
 --           an associate record created in 2021 colliding with a user created
 --           in 2026). Use adp_tenure_history.applicant_id as the linkage.
+--
+-- ⚠ DEPLOY VIA deploy_hires.sql — do NOT run this file standalone:
+--   silver.v_hire_retention depends on this view, so the DROP VIEW below fails
+--   ("cannot drop view ... because other objects depend on it") unless the
+--   dependent is dropped first. deploy_hires.sql (same directory) drops
+--   v_hire_retention, rebuilds this view, then rebuilds v_hire_retention.
 --
 -- ⚠ PREREQUISITE — run this index before deploying the view:
 --   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_adp_tenure_applicant_snap
@@ -50,7 +64,88 @@
 --       Positive  = normal onboarding lag
 --       Zero      = hired and started same day
 --       Negative  = start date backdated
---       NULL      = no start date recorded
+--       NULL      = no start date recorded (or a 'pending' row — see below)
+--
+--   PENDING HIRES  (hire_confirmation_status)
+--     In Portal 1, "becoming a hire" touches three independent things at
+--     different times: (1) applicant_status_id flips to 5 ("Hired"), (2) a
+--     start date is set on portal_users.hire_date, and (3) a recruiter logs a
+--     "Hired" funnel event (requisition_statistic_type_id = 6). The event (3)
+--     is a MANUAL step and frequently lags the start by days to weeks — so a
+--     class can be fully started and still invisible to an event-only view
+--     (the GiftHealth 6/22 class: 11 started 6/22, 0 events logged by 6/29).
+--
+--     This view therefore has two row sources, distinguished by
+--     hire_confirmation_status:
+--
+--       'confirmed' — backed by a logged type-6 Hired event (the original
+--                     spine). Full event-axis fields (event_at/date, iso_*,
+--                     recruiter). This is the pre-2026-06-29 behavior exactly.
+--
+--       'pending'   — status = "Hired" + start date set + NO logged event,
+--                     AND corroborating evidence the start was real (see
+--                     EVIDENCE GATE). These have NO event to point at, so all
+--                     EVENT-axis fields are NULL (event_at, event_date,
+--                     event_type_*, iso_year/week, recruiter_*, days_to_start)
+--                     and event_id is a synthetic -applicant_id (negative = not
+--                     a real logged event, still globally unique for row
+--                     identity). START-axis fields (actual_start_date,
+--                     start_iso_*) ARE populated — that is the whole point.
+--                     Order/client/position are inferred from the applicant's
+--                     most-recent Accept Offer (type 8), since there is no hire
+--                     event to read the requisition from.
+--
+--     NO DOUBLE COUNTING: the pending source requires NOT EXISTS any type-6
+--     event for the applicant (on any requisition), so a person is never both
+--     'confirmed' and 'pending'. When the recruiter finally logs the event,
+--     the same person stops matching the pending source and appears once as
+--     'confirmed' — the row flips pending -> confirmed automatically, and its
+--     event_id changes from -applicant_id to the real event id.
+--
+--     CONSUMERS:
+--       • "starting this week" / hires / net gain / retention — use ALL rows
+--         (default). Pending rows make the picture complete, current and
+--         historical.
+--       • recruiter activity / "hires logged this week" — filter to
+--         hire_confirmation_status = 'confirmed' (pending rows have no
+--         recruiter and no event date, so the event-axis filters already
+--         exclude them, but filtering explicitly is clearest).
+--       • exact pre-2026-06-29 numbers — filter hire_confirmation_status =
+--         'confirmed'.
+--
+--     EVIDENCE GATE (why, and why NOT a rolling window):
+--       Logging the Hired event simply was not a reliable step before ~2023
+--       (2023–24 have ~1% pending; 2020–22 have thousands), so an unbounded
+--       status-only source would resurrect ~10k historical rows. But those are
+--       NOT junk: 90%+ are verifiably real hires — they appear on ADP payroll
+--       and/or have a termination record (they provably worked). The
+--       confirmed-only spine has therefore been UNDERCOUNTING historical hires.
+--       A rolling "last-90-days" window would hide these real hires AND make
+--       answers to historical questions change with the calendar (a hire would
+--       blink out of the view 90 days after it started). Rejected.
+--
+--       Instead, a 'pending' row is included when ANY of these holds — a
+--       STABLE rule (evidence does not expire), so a real hire never ages out:
+--         1. an ADP tenure snapshot exists on/after the start date
+--            (proof they were on payroll for THIS stint); OR
+--         2. a termination exists on/after the start date
+--            (proof they worked this stint, then left); OR
+--         3. the start date is within the trailing 90 days
+--            (brand-new class — evidence has not landed yet; catches fresh
+--            unlogged classes like GiftHealth immediately).
+--
+--       Only arm 3 is CURRENT_DATE-relative, and it governs ONLY un-evidenced
+--       brand-new rows. A genuine recent hire gains ADP/termination evidence
+--       within weeks and is then included permanently via arm 1/2. The only
+--       rows that age out at 90 days are phantoms: status="Hired" with a start
+--       date but never on payroll, never terminated, and not recent — i.e. a
+--       hire that never actually materialized (~40 across all years).
+--
+--     HISTORICAL RESTATEMENT: this is a deliberate, large change. The pending
+--     source adds ~10k rows spanning 2015→present, so historical hire counts
+--     (and net-gain / retention denominators) rise materially vs. the
+--     confirmed-only view — e.g. 2022 ~571 -> ~1,640. Consumers needing the old
+--     event-only numbers must filter hire_confirmation_status = 'confirmed'.
 --
 --   "Never started" cohort:
 --     Rows where actual_start_date IS NULL AND a matching termination
@@ -267,12 +362,84 @@ recruiters AS (
     FROM bronze.portal_users u
     INNER JOIN bronze.portal_role_user ru ON u.id = ru.user_id
     WHERE ru.role_id = 6
+),
+
+-- 4a. Latest termination date per applicant — evidence-gate input (arm 2).
+--     portal_terminations is keyed by user_id; map to applicant via
+--     portal_users. Pre-aggregated once here (the table is small, ~22k rows)
+--     rather than as a correlated lookup per pending candidate.
+terminated_applicants AS (
+    SELECT pu.applicant_id, MAX(t.termination_date) AS last_termination_date
+    FROM bronze.portal_terminations t
+    JOIN bronze.portal_users pu ON pu.id = t.user_id
+    WHERE pu.applicant_id IS NOT NULL
+    GROUP BY pu.applicant_id
+),
+
+-- 4b. PENDING hires — status "Hired" + start date set, but NO logged event,
+--    AND evidence the start was real (see header "PENDING HIRES" / EVIDENCE
+--    GATE). One row per applicant at most: canonical_users is DISTINCT ON
+--    (applicant_id) and the NOT EXISTS removes anyone with any logged type-6
+--    event, so this can never overlap the 'confirmed' spine. The evidence gate
+--    (not a rolling window) keeps the source stable for historical questions —
+--    a real hire is included via payroll/termination evidence permanently;
+--    only un-materialized phantoms (no evidence, not recent) are excluded.
+pending_hires AS (
+    SELECT
+        a.id                                    AS applicant_id,
+        a.first_name,
+        a.last_name,
+        a.client_id                             AS applicant_client_id,
+        cu.user_id,
+        cu.hire_date,
+        cu.onboarding_department_id,
+        acc.requisition_id
+    FROM bronze.portal_applicants a
+    JOIN canonical_users cu
+        ON cu.applicant_id = a.id
+       AND cu.hire_date IS NOT NULL
+    -- Infer the hiring requisition from the most-recent Accept Offer (type 8),
+    -- since there is no Hired event to read requisition_id from.
+    LEFT JOIN LATERAL (
+        SELECT rs.requisition_id
+        FROM bronze.portal_requisition_statistics rs
+        WHERE rs.applicant_id = a.id
+          AND rs.requisition_statistic_type_id = 8   -- Accept Offer
+        ORDER BY rs.created_at DESC
+        LIMIT 1
+    ) acc ON TRUE
+    LEFT JOIN terminated_applicants ta
+        ON ta.applicant_id = a.id
+    WHERE a.applicant_status_id = 5                   -- portal status = "Hired"
+      AND NOT EXISTS (                                -- ...but no logged Hired event anywhere
+          SELECT 1
+          FROM bronze.portal_requisition_statistics h
+          WHERE h.applicant_id = a.id
+            AND h.requisition_statistic_type_id = 6
+      )
+      AND (                                           -- EVIDENCE GATE (any arm; stable rule)
+          -- arm 1: on ADP payroll on/after this start (proof of THIS stint).
+          --        Uses idx_adp_tenure_applicant_snap (applicant_id, snapshot_date).
+          EXISTS (
+              SELECT 1 FROM bronze.adp_tenure_history adp
+              WHERE adp.applicant_id   = a.id
+                AND adp.snapshot_date >= cu.hire_date
+          )
+          -- arm 2: terminated on/after this start (proof they worked, then left).
+          OR ta.last_termination_date >= cu.hire_date
+          -- arm 3: brand-new — evidence not landed yet (catches fresh classes).
+          OR cu.hire_date >= CURRENT_DATE - INTERVAL '90 days'
+      )
 )
 
 SELECT
 
     -- ── Source tracking ───────────────────────────────────────────────────
     'portal_v1'                                 AS source_system,
+
+    -- Event-backed rows are the original spine — confirmed hires.
+    -- (The pending branch below sets this to 'pending'.)
+    'confirmed'::text                           AS hire_confirmation_status,
 
     -- ── Hire event (primary grain) ────────────────────────────────────────
     rs.id                                       AS event_id,
@@ -392,6 +559,101 @@ LEFT JOIN silver.v_department_offering vdo
 -- hire_events CTE, alongside the same-day de-duplication.
 
 
+-- ── Pending branch ────────────────────────────────────────────────────────
+-- Status-backed hires with a start date but no logged event yet. Column list
+-- and order MUST match the confirmed branch above exactly. Event-axis fields
+-- are NULL (there is no event); start-axis fields are populated. See header
+-- "PENDING HIRES".
+UNION ALL
+
+SELECT
+
+    -- ── Source tracking ───────────────────────────────────────────────────
+    'portal_v1'                                 AS source_system,
+    'pending'::text                             AS hire_confirmation_status,
+
+    -- ── Hire event (NONE — synthetic, event-axis is empty) ────────────────
+    -- event_id = -applicant_id: negative flags "not a real logged event" and
+    -- stays globally unique so (source_system, event_id) row identity holds.
+    (-ph.applicant_id)::bigint                  AS event_id,
+    NULL::timestamptz                           AS event_at,
+    NULL::date                                  AS event_date,
+    NULL::bigint                                AS event_type_id,
+    NULL::varchar                               AS event_type_name,
+
+    -- ── Person ────────────────────────────────────────────────────────────
+    ph.user_id,
+    ph.applicant_id,
+    ph.first_name,
+    ph.last_name,
+    ph.first_name || ' ' || ph.last_name        AS full_name,
+
+    -- ── Position / Order context (inferred from Accept Offer) ─────────────
+    ph.requisition_id                           AS position_id,
+    ph.requisition_id                           AS order_id,
+    r.requisition_key                           AS position_key,
+    r.position                                  AS position_title,
+    r.is_pipeline,
+
+    -- ── Client ────────────────────────────────────────────────────────────
+    COALESCE(r.client_id, ph.applicant_client_id)  AS client_id,
+    c.name                                      AS client_name,
+
+    -- ── Hire timing: start date known, event date unknown ─────────────────
+    ph.hire_date                                AS actual_start_date,
+    NULL::int                                   AS days_to_start,   -- lag undefined w/o event
+
+    -- ── Recruiter: none (no event was logged) ─────────────────────────────
+    NULL::bigint                                AS recruiter_id,
+    NULL::text                                  AS recruiter_name,
+
+    -- ── ISO week helpers: EVENT axis is empty for pending rows ────────────
+    NULL::int                                   AS iso_year,
+    NULL::int                                   AS iso_week,
+
+    -- ── ISO week helpers: START axis (the point of this branch) ───────────
+    EXTRACT(isoyear FROM ph.hire_date)::int     AS start_iso_year,
+    EXTRACT(week    FROM ph.hire_date)::int     AS start_iso_week,
+
+    -- ── Offering enrichment (anchored on the start date) ──────────────────
+    COALESCE(adp_pit.dept_code, onboard_dept.code)  AS department_code,
+    vdo.department_id,
+    vdo.department_name,
+    vdo.offering,
+    vdo.service,
+    COALESCE(vdo.is_excluded, FALSE)                AS is_offering_excluded,
+    CASE
+        WHEN adp_pit.dept_code  IS NOT NULL THEN 'adp_pit'
+        WHEN onboard_dept.code  IS NOT NULL THEN 'onboarding_dept'
+        ELSE                                         NULL
+    END                                             AS offering_source
+
+FROM pending_hires ph
+
+LEFT JOIN bronze.portal_requisitions r
+    ON r.id = ph.requisition_id
+
+LEFT JOIN bronze.portal_clients c
+    ON c.id = COALESCE(r.client_id, ph.applicant_client_id)
+
+-- Offering enrichment, same chain as the confirmed branch but anchored on the
+-- start date (no event date exists). Requires idx_adp_tenure_applicant_snap.
+LEFT JOIN LATERAL (
+    SELECT TRIM(adp.home_department_code)       AS dept_code
+    FROM bronze.adp_tenure_history adp
+    WHERE adp.applicant_id   = ph.applicant_id
+      AND adp.snapshot_date >= ph.hire_date
+    ORDER BY adp.snapshot_date
+    LIMIT 1
+) adp_pit ON TRUE
+
+LEFT JOIN bronze.portal_departments onboard_dept
+    ON onboard_dept.id = ph.onboarding_department_id
+
+LEFT JOIN silver.v_department_offering vdo
+    ON vdo.department_code = COALESCE(adp_pit.dept_code, onboard_dept.code)
+
+
 -- ══════════════════════════════════════════════════════════════════════════
 -- FUTURE: Cajetan (Portal 2) UNION ALL branch
 -- Add when cajetan schema is available in the warehouse.
@@ -401,6 +663,7 @@ LEFT JOIN silver.v_department_offering vdo
 -- UNION ALL
 -- SELECT
 --     'cajetan'::text                                 AS source_system,
+--     'confirmed'::text                               AS hire_confirmation_status,
 --     h.id                                            AS event_id,
 --     h.created_at                                    AS event_at,
 --     DATE(h.created_at)                              AS event_date,
@@ -420,6 +683,25 @@ artifacts, not distinct hires, and were inflating COUNT(*) over this view.
 Genuine rehires onto the same requisition on a different day, and hires
 onto a different requisition, remain separate rows.
 Uses Cajetan (Portal 2) vocabulary; Portal 1 fields aliased to match.
+
+TWO ROW SOURCES (hire_confirmation_status):
+  confirmed  Backed by a logged Hired event (type 6) — the original spine,
+             full event-axis fields. Filter to this for exact pre-2026-06-29
+             numbers and for recruiter-activity / "hires logged this week".
+  pending    Portal status = Hired + start date set + NO logged event, AND
+             evidence the start was real: on ADP payroll on/after the start, OR
+             terminated on/after the start, OR started within the trailing 90
+             days (brand-new, evidence not yet landed). Event-axis fields are
+             NULL; start-axis fields populated; event_id = -applicant_id
+             (synthetic); order/client inferred from the most-recent Accept
+             Offer (type 8). Surfaces real hires the event-logging step missed
+             (~10k rows, 2015->present — the confirmed-only spine undercounts
+             history; e.g. 2022 ~571 -> ~1,640). Cannot double-count (requires
+             NOT EXISTS any type-6 event); flips to confirmed automatically when
+             the event is logged. The evidence gate is STABLE — a real hire
+             never ages out; only un-materialized phantoms (no payroll, no
+             termination, not recent) drop after 90 days. Default queries
+             include both sources; filter to confirmed for event-only counts.
 
 TWO DATES:
   event_at / event_date / iso_year / iso_week
@@ -500,6 +782,50 @@ OFFERING ENRICHMENT (2026-06-03):
 --      AND actual_start_date >= '2026-03-01'
 --      AND actual_start_date <  '2026-04-01'
 --      AND is_offering_excluded = FALSE;
+
+-- 2d. PENDING source — confirmed/pending split. Pending spans 2015->present
+--     (~10k evidence-gated rows as of 2026-06); confirmed is the event spine.
+--    SELECT hire_confirmation_status, COUNT(*),
+--           MIN(actual_start_date), MAX(actual_start_date)
+--    FROM silver.v_hires_unified
+--    GROUP BY 1;
+
+-- 2d2. Evidence gate held — every pending row has payroll/termination evidence
+--      on/after its start, OR started in the trailing 90 days. Expect zero rows.
+--    SELECT COUNT(*)
+--    FROM silver.v_hires_unified h
+--    WHERE h.hire_confirmation_status = 'pending'
+--      AND h.actual_start_date < CURRENT_DATE - INTERVAL '90 days'
+--      AND NOT EXISTS (SELECT 1 FROM bronze.adp_tenure_history adp
+--                        WHERE adp.applicant_id = h.applicant_id
+--                          AND adp.snapshot_date >= h.actual_start_date)
+--      AND NOT EXISTS (SELECT 1 FROM bronze.portal_terminations t
+--                        JOIN bronze.portal_users pu ON pu.id = t.user_id
+--                       WHERE pu.applicant_id = h.applicant_id
+--                         AND t.termination_date >= h.actual_start_date);
+
+-- 2e. No applicant is both confirmed AND pending (NOT EXISTS guarantees this).
+--     Expect zero rows.
+--    SELECT applicant_id
+--    FROM silver.v_hires_unified
+--    GROUP BY applicant_id
+--    HAVING COUNT(DISTINCT hire_confirmation_status) > 1;
+
+-- 2f. GiftHealth 6/22 class surfaces as pending — expect 11 (orders 9342/9344).
+--    SELECT full_name, order_id, actual_start_date, hire_confirmation_status
+--    FROM silver.v_hires_unified
+--    WHERE client_name ILIKE '%Gifthealth%'
+--      AND actual_start_date = '2026-06-22'
+--    ORDER BY order_id, full_name;
+
+-- 2g. Pending rows carry NO event-axis data (all NULL) and a negative event_id.
+--     Expect zero rows.
+--    SELECT COUNT(*)
+--    FROM silver.v_hires_unified
+--    WHERE hire_confirmation_status = 'pending'
+--      AND (event_at IS NOT NULL OR event_date IS NOT NULL
+--           OR iso_year IS NOT NULL OR recruiter_id IS NOT NULL
+--           OR event_id >= 0 OR actual_start_date IS NULL);
 
 -- 3. Start-date resolution rate — how many hires have an actual_start_date
 --    SELECT
