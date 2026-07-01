@@ -45,6 +45,7 @@
             <=365d).
 */
 DROP VIEW IF EXISTS silver.v_hire_retention;
+
 CREATE OR REPLACE VIEW silver.v_hire_retention AS
 WITH hires AS (
   SELECT h.source_system, h.event_id AS hire_event_id, h.applicant_id, h.full_name,
