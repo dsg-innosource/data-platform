@@ -27,6 +27,22 @@
   Checkpoints: 6w = 42d, 8w = 56d, 15w = 105d.
 
   Created : 2026-06-03
+  Modified: 2026-07-01 — NO-SHOW LEAKAGE FIX (defect 2). term_match only matches
+            is_excluded = false terminations, so an EXCLUDED "Never started /
+            delayed" (termination_reason_id = 13) cancellation did NOT deactivate
+            the associate: a no-show read as is_currently_active = true and as
+            retained at every checkpoint (~136 such rows). KPI decision: a
+            never-started candidate never BECAME an associate, so they belong in
+            NEITHER the numerator nor the denominator — they are removed from the
+            surface entirely (not merely flagged inactive). Implemented as a
+            NOT EXISTS anti-join in the hires CTE: a start is dropped when an
+            EXCLUDED termination exists on/after it. Combined with the
+            v_hires_unified 2026-07-01 episode-binding fix (which nulls the start
+            on mis-stamped older/rehire events, so they fall out of the trailing-
+            365 window), this drives "currently_active with an excluded
+            never-started termination" to 0 and "underlying event predates start
+            by >180d" from 46 to ~10 (genuine long onboarding lags, latest event,
+            <=365d).
 */
 DROP VIEW IF EXISTS silver.v_hire_retention;
 CREATE OR REPLACE VIEW silver.v_hire_retention AS
@@ -39,6 +55,17 @@ WITH hires AS (
   FROM silver.v_hires_unified h
   WHERE h.actual_start_date IS NOT NULL
     AND h.actual_start_date >= (CURRENT_DATE - INTERVAL '365 days')::date
+    -- NO-SHOW EXCLUSION (2026-07-01): drop starts cancelled as "Never started /
+    -- delayed". An EXCLUDED termination (v_terminations_unified.is_excluded =
+    -- true, i.e. termination_reason_id = 13) on/after the start date means the
+    -- person never actually started — they never became an associate and must
+    -- not count toward the retention numerator OR denominator.
+    AND NOT EXISTS (
+      SELECT 1 FROM silver.v_terminations_unified t
+      WHERE t.applicant_id = h.applicant_id
+        AND t.is_excluded = TRUE
+        AND t.termination_date >= h.actual_start_date
+    )
 ),
 term_match AS (                          -- earliest termination on/after each start
   SELECT hr.hire_event_id, MIN(t.termination_date) AS termination_date
@@ -68,7 +95,10 @@ COMMENT ON VIEW silver.v_hire_retention IS
   '(applicant_id, is_excluded = false). Powers cohort-free retention: of associates who reached an '
   'N-week checkpoint, how many are still active at that mark. Filter is_offering_excluded = false for '
   'every retention KPI; scope to a service line with offering (e.g. ''Contract''). Rehires are evaluated '
-  'per start row against the earliest qualifying termination, so a rehired associate contributes multiple rows.';
+  'per start row against the earliest qualifying termination, so a rehired associate contributes multiple rows. '
+  'Starts cancelled as "Never started / delayed" (an EXCLUDED termination on/after the start) are removed '
+  'entirely (2026-07-01) — a no-show never became an associate and belongs in neither the numerator nor the '
+  'denominator.';
 
 COMMENT ON COLUMN silver.v_hire_retention.hire_event_id IS 'Grain. v_hires_unified.event_id — one row per hire/start event.';
 COMMENT ON COLUMN silver.v_hire_retention.termination_date IS 'Earliest termination on/after actual_start_date for this applicant (is_excluded = false); NULL if still active.';

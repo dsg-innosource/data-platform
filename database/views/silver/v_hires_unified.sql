@@ -4,6 +4,48 @@
 --          Mirrors v_terminations_unified design for symmetry; the two views
 --          are intended to join on applicant_id (+ position_id) in reports.
 -- Created:  2026-04-17
+-- Modified: 2026-07-01 — EPISODE-BINDING FIX (defect 1 + new-episode visibility).
+--           (1) actual_start_date / start_iso_* / days_to_start on the CONFIRMED
+--               spine are now bound to the correct hire EPISODE. Previously they
+--               were decorated from canonical_users.hire_date (portal_users stores
+--               ONE mutable hire_date + onboarding_department_id per applicant —
+--               the CURRENT stint), decorated by applicant_id ALONE, so a LATER
+--               re-application's start/department was pasted onto an OLDER event
+--               row. Now the stored start/onboarding-dept decorate ONLY the
+--               applicant's most-recent Hired event (applicant_latest_event CTE),
+--               and ONLY when the start falls on/before event_date + 365 (a start
+--               years after the event provably belongs to a later, eventless
+--               episode). Non-current events and far-later starts get NULL — the
+--               honest value, since portal_users overwrites the older stint's
+--               start (that value is not recoverable). No lower bound: a start
+--               BEFORE the event is the normal event-logging lag, not a defect.
+--               The ADP-PIT department lookup gains an upper window bound
+--               (snapshot_date <= event_date + 365) so a far-later snapshot can no
+--               longer backfill an old event's department; the onboarding-dept
+--               fallback is gated to the current episode. Fixture: applicant
+--               136818 (Jacqueline Adamson) — her two 2017 Nationwide events no
+--               longer show actual_start_date 2026-05-04 / dept "Alliant Energy";
+--               they now show NULL start / dept (2017 start overwritten). Drives
+--               "confirmed rows with (start - event) > 365d" from 117 -> 0.
+--           (2) NEW-EPISODE VISIBILITY: the PENDING anti-double-count guard is now
+--               REQUISITION-SCOPED, not applicant-wide. Previously a pending row
+--               required NOT EXISTS *any* type-6 event for the applicant, so a
+--               genuinely new stint (new requisition, no logged Hired event yet)
+--               for anyone ever confirmed-hired was silently dropped. Now a
+--               pending row is suppressed only when a type-6 event exists on the
+--               SAME inferred requisition (falling back to the applicant-wide rule
+--               when no Accept Offer anchors an episode). A rehire onto a new order
+--               therefore gets its OWN pending row bound to its own order/start,
+--               while a confirmed hire is still never double-counted on its own
+--               requisition (verified: 0 (applicant, requisition) pairs are both
+--               confirmed and pending). Surfaces ~900 previously-hidden rehire
+--               episodes. INVARIANT CHANGE: a person may now be 'confirmed' for one
+--               requisition and 'pending' for a DIFFERENT one — uniqueness is per
+--               (applicant_id, order_id), no longer per applicant.
+--           (3) Evidence-gate arm 2 now ignores "Never started / delayed"
+--               (termination_reason_id = 13) terminations — a never-started
+--               cancellation is not proof the stint was worked, so it no longer
+--               resurrects a phantom hire.
 -- Modified: 2026-06-29 — Added a PENDING hire source + hire_confirmation_status
 --           column (see "PENDING HIRES" below). The view is no longer driven
 --           solely by the logged Hired event: candidates whose portal status
@@ -169,13 +211,21 @@
 --     "Hired" — not distinct hires, and they inflated COUNT(*) over this view
 --     before this fix (Alliant Energy 3/16 class: 4 rows per associate → 1).
 --
---     LIMITATION — rehires: actual_start_date is decorated from
---     canonical_users, which collapses portal_users to one row per
---     applicant_id (prefers is_active = TRUE, then latest created_at).
---     For applicants with multiple historical stints, every event row
---     gets the SAME (most recent) actual_start_date. This is correct for
---     the latest hire event but imprecise for older rehire events. Accept
---     unless rehire analysis is a primary use case.
+--     REHIRES (2026-07-01 episode-binding fix): actual_start_date is
+--     decorated from canonical_users.hire_date, which collapses portal_users
+--     to one MUTABLE row per applicant_id (prefers is_active = TRUE, then
+--     latest created_at) — that hire_date is the CURRENT stint's start and is
+--     overwritten on each rehire. It is therefore attached ONLY to the
+--     applicant's most-recent Hired event (applicant_latest_event), and ONLY
+--     when it falls on/before event_date + 365. Older rehire events and
+--     events whose stored start belongs to a later (eventless) episode get
+--     actual_start_date = NULL — the older stint's true start was overwritten
+--     and is not recoverable here, so NULL is the honest value (previously
+--     these rows carried the LATER stint's start, which leaked into retention
+--     and produced negative tenure downstream). RESIDUAL: an older stint's
+--     start is not reconstructed. A future enhancement could recover it from
+--     bronze.adp_tenure_history.hire_date per snapshot where ADP covers the
+--     stint (~84% applicant coverage, recent years only).
 --
 --   Recruiter exclusions : NONE. All recruiters are included, even those
 --     suppressed in v_applicant_activity_events (441 Becky Henke,
@@ -333,6 +383,29 @@ hire_events AS (
     WHERE dup_rn = 1
 ),
 
+-- 1b. Latest Hired event per applicant — the EPISODE anchor for person-level
+--     enrichment. portal_users holds ONE mutable hire_date and one
+--     onboarding_department_id per applicant (the CURRENT stint, overwritten on
+--     rehire); those values legitimately belong ONLY to the applicant's
+--     most-recent Hired event. Every OLDER event must NOT inherit them (doing so
+--     pasted a later re-application's start/department onto an older event —
+--     applicant 136818's 2017 Nationwide rows showed a 2026 Alliant start).
+--     Uses the de-duplicated hire_events so the anchor matches the emitted grain.
+applicant_latest_event AS (
+    SELECT applicant_id, event_id
+    FROM (
+        SELECT
+            applicant_id,
+            id AS event_id,
+            ROW_NUMBER() OVER (
+                PARTITION BY applicant_id
+                ORDER BY created_at DESC, id DESC
+            ) AS rn
+        FROM hire_events
+    ) z
+    WHERE rn = 1
+),
+
 -- 2. Resolve duplicate portal_users → one canonical row per applicant_id.
 --    Same logic as v_terminations_unified.canonical_users:
 --      prefers is_active = TRUE, then most recently created record.
@@ -364,15 +437,19 @@ recruiters AS (
     WHERE ru.role_id = 6
 ),
 
--- 4a. Latest termination date per applicant — evidence-gate input (arm 2).
+-- 4a. Latest REAL termination date per applicant — evidence-gate input (arm 2).
 --     portal_terminations is keyed by user_id; map to applicant via
 --     portal_users. Pre-aggregated once here (the table is small, ~22k rows)
 --     rather than as a correlated lookup per pending candidate.
+--     Excludes termination_reason_id = 13 ("Never started / delayed"): arm 2
+--     means "worked this stint, then left" — a never-started cancellation is
+--     NOT proof of a worked stint, so it must not resurrect a phantom hire.
 terminated_applicants AS (
     SELECT pu.applicant_id, MAX(t.termination_date) AS last_termination_date
     FROM bronze.portal_terminations t
     JOIN bronze.portal_users pu ON pu.id = t.user_id
     WHERE pu.applicant_id IS NOT NULL
+      AND t.termination_reason_id <> 13        -- ignore never-started cancellations
     GROUP BY pu.applicant_id
 ),
 
@@ -411,11 +488,22 @@ pending_hires AS (
     LEFT JOIN terminated_applicants ta
         ON ta.applicant_id = a.id
     WHERE a.applicant_status_id = 5                   -- portal status = "Hired"
-      AND NOT EXISTS (                                -- ...but no logged Hired event anywhere
+      -- ...but no logged Hired event for THIS episode's requisition. Scoping the
+      -- guard to acc.requisition_id (rather than applicant-wide) lets a genuinely
+      -- new stint on a new order surface even for someone with a prior confirmed
+      -- hire on a DIFFERENT order — a rehire gets its own row bound to its own
+      -- order/start. When no Accept Offer anchors an episode (acc.requisition_id
+      -- IS NULL) the guard falls back to applicant-wide (original behavior), so a
+      -- pending row with no order context can never shadow a confirmed hire.
+      -- A confirmed hire is still never double-counted on its own requisition
+      -- (verified: 0 (applicant, requisition) pairs are both confirmed & pending).
+      AND NOT EXISTS (
           SELECT 1
           FROM bronze.portal_requisition_statistics h
           WHERE h.applicant_id = a.id
             AND h.requisition_statistic_type_id = 6
+            AND (acc.requisition_id IS NULL
+                 OR h.requisition_id = acc.requisition_id)
       )
       AND (                                           -- EVIDENCE GATE (any arm; stable rule)
           -- arm 1: on ADP payroll on/after this start (proof of THIS stint).
@@ -472,10 +560,14 @@ SELECT
     c.name                                      AS client_name,
 
     -- ── Hire timing: decision date vs. actual start date ──────────────────
-    cu.hire_date                                AS actual_start_date,
+    -- EPISODE-BOUND (2026-07-01): es.episode_start is cu.hire_date attached ONLY
+    -- to the applicant's latest Hired event and only when the start is on/before
+    -- event_date + 365. NULL on older rehire events and on far-later starts that
+    -- belong to a subsequent eventless episode. See the es LATERAL below.
+    es.episode_start                            AS actual_start_date,
     CASE
-        WHEN cu.hire_date IS NOT NULL
-        THEN (cu.hire_date - DATE(rs.created_at))::int
+        WHEN es.episode_start IS NOT NULL
+        THEN (es.episode_start - DATE(rs.created_at))::int
         ELSE NULL
     END                                         AS days_to_start,
 
@@ -491,8 +583,8 @@ SELECT
     -- ── ISO week helpers: START DATE axis ─────────────────────────────────
     -- "Started this week" — onboarded-employee reporting. NULL until
     -- the user record has a hire_date.
-    EXTRACT(isoyear FROM cu.hire_date)::int     AS start_iso_year,
-    EXTRACT(week    FROM cu.hire_date)::int     AS start_iso_week,
+    EXTRACT(isoyear FROM es.episode_start)::int AS start_iso_year,
+    EXTRACT(week    FROM es.episode_start)::int AS start_iso_week,
 
     -- ── Offering enrichment ───────────────────────────────────────────────
     -- See header "OFFERING ENRICHMENT" for the full resolution story.
@@ -530,25 +622,55 @@ LEFT JOIN bronze.portal_clients c
 LEFT JOIN recruiters rec
     ON rec.id = rs.created_by_recruiter_id
 
+-- ── Episode binding for person-level enrichment (2026-07-01) ──────────────
+-- ale = the applicant's latest Hired event; es exposes whether THIS event is
+-- the current episode and the episode-bound start date. portal_users stores one
+-- mutable hire_date + onboarding_department_id per applicant (the current stint),
+-- so those decorate ONLY the latest event, and the start only when it is not a
+-- far-later (eventless) episode's start (on/before event_date + 365). No lower
+-- bound: a start BEFORE the event is the normal event-logging lag, not a defect.
+LEFT JOIN applicant_latest_event ale
+    ON ale.applicant_id = rs.applicant_id
+LEFT JOIN LATERAL (
+    SELECT
+        (rs.id = ale.event_id
+         AND (cu.hire_date IS NULL
+              OR cu.hire_date <= DATE(rs.created_at) + 365))  AS is_current_episode,
+        CASE
+            WHEN rs.id = ale.event_id
+             AND cu.hire_date IS NOT NULL
+             AND cu.hire_date <= DATE(rs.created_at) + 365
+            THEN cu.hire_date
+        END                                                    AS episode_start
+) es ON TRUE
+
 -- ── Offering enrichment joins ─────────────────────────────────────────────
--- 1. ADP point-in-time: earliest snapshot at or after the hire event for the
---    applicant. Event-anchored (uses rs.created_at, not cu.hire_date) so
---    rehires resolve to their per-event department instead of all collapsing
---    to the latest stint. Requires idx_adp_tenure_applicant_snap.
+-- 1. ADP point-in-time: earliest snapshot in the window [event_date,
+--    event_date + 365] for the applicant. Event-anchored (uses rs.created_at,
+--    not cu.hire_date) so rehires resolve to their per-event department. The
+--    upper bound (added 2026-07-01) stops a far-LATER snapshot from backfilling
+--    an old event's department across an episode gap (applicant 136818's 2017
+--    events were picking up a 2026 Alliant department this way). A legitimate
+--    recent hire's first ADP snapshot lands within days, well inside the window.
+--    Requires idx_adp_tenure_applicant_snap.
 LEFT JOIN LATERAL (
     SELECT TRIM(adp.home_department_code)       AS dept_code
     FROM bronze.adp_tenure_history adp
     WHERE adp.applicant_id   = rs.applicant_id
       AND adp.snapshot_date >= DATE(rs.created_at)
+      AND adp.snapshot_date <= DATE(rs.created_at) + 365
     ORDER BY adp.snapshot_date
     LIMIT 1
 ) adp_pit ON TRUE
 
 -- 2. Onboarding department fallback for events with no usable ADP snapshot
---    (never-started hires, pre-2025 events). Joined to portal_departments
---    only to expose `code`, which is what v_department_offering joins on.
+--    (never-started hires, pre-2025 events). Joined to portal_departments only
+--    to expose `code`, which is what v_department_offering joins on. Gated to
+--    the current episode (es.is_current_episode): onboarding_department_id, like
+--    hire_date, reflects the CURRENT stint, so it must not decorate older events.
 LEFT JOIN bronze.portal_departments onboard_dept
-    ON onboard_dept.id = cu.onboarding_department_id
+    ON onboard_dept.id = CASE WHEN es.is_current_episode
+                              THEN cu.onboarding_department_id END
 
 -- 3. Offering crosswalk. Joined by the resolved department code; vdo is
 --    NULL for both columns when neither ADP nor onboarding resolve.
@@ -688,20 +810,33 @@ TWO ROW SOURCES (hire_confirmation_status):
   confirmed  Backed by a logged Hired event (type 6) — the original spine,
              full event-axis fields. Filter to this for exact pre-2026-06-29
              numbers and for recruiter-activity / "hires logged this week".
-  pending    Portal status = Hired + start date set + NO logged event, AND
-             evidence the start was real: on ADP payroll on/after the start, OR
-             terminated on/after the start, OR started within the trailing 90
-             days (brand-new, evidence not yet landed). Event-axis fields are
-             NULL; start-axis fields populated; event_id = -applicant_id
+  pending    Portal status = Hired + start date set + NO logged event on this
+             episode''s requisition, AND evidence the start was real: on ADP
+             payroll on/after the start, OR terminated (for a REAL reason, not
+             "Never started / delayed") on/after the start, OR started within the
+             trailing 90 days (brand-new, evidence not yet landed). Event-axis
+             fields are NULL; start-axis fields populated; event_id = -applicant_id
              (synthetic); order/client inferred from the most-recent Accept
              Offer (type 8). Surfaces real hires the event-logging step missed
              (~10k rows, 2015->present — the confirmed-only spine undercounts
-             history; e.g. 2022 ~571 -> ~1,640). Cannot double-count (requires
-             NOT EXISTS any type-6 event); flips to confirmed automatically when
-             the event is logged. The evidence gate is STABLE — a real hire
-             never ages out; only un-materialized phantoms (no payroll, no
-             termination, not recent) drop after 90 days. Default queries
-             include both sources; filter to confirmed for event-only counts.
+             history; e.g. 2022 ~571 -> ~1,640). ANTI-DOUBLE-COUNT (2026-07-01):
+             the guard is REQUISITION-SCOPED — a pending row is suppressed only
+             when a type-6 event exists on the SAME inferred requisition, so a
+             confirmed hire is never double-counted on its own order, yet a
+             genuinely new stint on a NEW order surfaces even for someone with a
+             prior confirmed hire (a rehire gets its own row). When no Accept
+             Offer anchors an episode the guard falls back to applicant-wide.
+             A pending row flips to confirmed automatically when its event is
+             logged. The evidence gate is STABLE — a real hire never ages out;
+             only un-materialized phantoms (no payroll, no real termination, not
+             recent) drop after 90 days. Default queries include both sources;
+             filter to confirmed for event-only counts.
+
+INVARIANT (2026-07-01): row identity / uniqueness is per (source_system,
+event_id) as before, but confirmed-vs-pending exclusivity is now per
+(applicant_id, order_id), NOT per applicant. A person may be confirmed on one
+order and pending on a DIFFERENT order (a rehire in progress). No (applicant_id,
+order_id) is ever both.
 
 TWO DATES:
   event_at / event_date / iso_year / iso_week
@@ -727,20 +862,28 @@ Join keys:
                    >= COALESCE(actual_start_date, event_date))
   (source_system, event_id) for unique row identity across sources.
 
-Rehire limitation: actual_start_date is decorated per applicant_id (not per
-event), so applicants with multiple stints get the most recent start date on
-every event row. Correct for the latest event; imprecise for older rehires.
+Rehire binding (2026-07-01): actual_start_date (and start_iso_*, days_to_start)
+is bound to the correct EPISODE. portal_users holds one mutable hire_date per
+applicant (the current stint), so it decorates ONLY the applicant''s most-recent
+Hired event, and only when the start is on/before event_date + 365. Older rehire
+events and far-later (eventless-episode) starts get NULL — the honest value,
+since the older stint''s start was overwritten and is not recoverable here.
+Previously every event carried the latest start, which leaked into retention and
+produced negative downstream tenure.
 
 OFFERING ENRICHMENT (2026-06-03):
   department_code / department_id / department_name / offering / service /
   is_offering_excluded / offering_source
 
   Resolved by:
-    1. adp_pit          (bronze.adp_tenure_history, earliest snapshot >= event_date)
-    2. onboarding_dept  (portal_users.onboarding_department_id)
+    1. adp_pit          (bronze.adp_tenure_history, earliest snapshot in
+                         [event_date, event_date + 365])
+    2. onboarding_dept  (portal_users.onboarding_department_id, current episode only)
     3. NULL
 
-  Rehires resolve correctly because the ADP lookup is event-anchored.
+  Rehires resolve correctly because the ADP lookup is event-anchored and window-
+  bounded (a far-later snapshot cannot backfill an old event), and the onboarding
+  fallback is gated to the current episode.
   is_offering_excluded = TRUE for Interns / HRMS / Internal / Long-Term;
   Net Gain reports should filter is_offering_excluded = FALSE.
 
@@ -804,12 +947,22 @@ OFFERING ENRICHMENT (2026-06-03):
 --                       WHERE pu.applicant_id = h.applicant_id
 --                         AND t.termination_date >= h.actual_start_date);
 
--- 2e. No applicant is both confirmed AND pending (NOT EXISTS guarantees this).
---     Expect zero rows.
---    SELECT applicant_id
+-- 2e. No (applicant_id, order_id) is both confirmed AND pending. As of the
+--     2026-07-01 requisition-scoped guard, exclusivity is per (applicant, order),
+--     NOT per applicant — a person MAY be confirmed on one order and pending on
+--     another (a rehire). This check must be zero rows; the old per-applicant
+--     version will (correctly) show the ~900 rehire episodes and is superseded.
+--    SELECT applicant_id, order_id
 --    FROM silver.v_hires_unified
---    GROUP BY applicant_id
+--    GROUP BY applicant_id, order_id
 --    HAVING COUNT(DISTINCT hire_confirmation_status) > 1;
+--
+-- 2e2. Episode binding — no confirmed row has (actual_start_date - event_date)
+--      > 365. Expect zero rows.
+--    SELECT COUNT(*) FROM silver.v_hires_unified
+--    WHERE hire_confirmation_status = 'confirmed'
+--      AND actual_start_date IS NOT NULL
+--      AND (actual_start_date - event_date) > 365;
 
 -- 2f. GiftHealth 6/22 class surfaces as pending — expect 11 (orders 9342/9344).
 --    SELECT full_name, order_id, actual_start_date, hire_confirmation_status

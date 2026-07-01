@@ -2,6 +2,22 @@
 -- Silver Layer View: v_terminations_unified
 -- Purpose: Present Portal 1.0 termination records in Portal 2.0 structure
 -- Created:  2026-03-13
+-- Modified: 2026-07-01 — EPISODE-BINDING FIX for tenure (defect 1). hire_date and
+--           tenure_days were decorated from canonical_users.hire_date — ONE
+--           mutable value per applicant (the current stint, overwritten on
+--           rehire) — joined by applicant_id ALONE. When that stored start
+--           POSTDATED the termination_date it belonged to a LATER episode, and
+--           (termination_date - hire_date) went negative (602 rows, 264 non-
+--           excluded, worst -664,635; applicant 136818's 2017 exit read
+--           tenure_days -3310 off a 2026 start). Fix: treat a stored start that
+--           postdates the termination as UNMATCHED — hire_date and tenure_days
+--           are NULL (and tenure_band 'Unknown'). tenure_days can no longer be
+--           negative. RESIDUAL: an older stint's true start is not reconstructed
+--           (the value was overwritten); and client/position may still reflect
+--           the applicant's most-recent placement (portal_applicants is a single
+--           mutable row) — that is a separate, unmeasured enrichment concern and
+--           is left as-is. See v_hires_unified 2026-07-01 for the matching fix on
+--           the hire spine.
 -- Modified: 2026-03-13 — Added termination_created_at, entry_iso_year,
 --           entry_iso_week to support "entered this week" reporting.
 --           Reports should filter on entry_iso_year / entry_iso_week
@@ -386,17 +402,28 @@ SELECT
     COALESCE(c.name, udf.dept_client_name)      AS client_name,
 
     -- ── Tenure ────────────────────────────────────────────────────────────
-    cu.hire_date,
+    -- EPISODE-BOUND hire_date (2026-07-01): canonical_users.hire_date is ONE
+    -- mutable value per applicant (the CURRENT stint, overwritten on rehire). If
+    -- it POSTDATES this termination it belongs to a LATER episode, not the stint
+    -- this row ends — pairing them produced negative tenure (applicant 136818's
+    -- 2017 exit was stamped with a 2026 start => tenure_days -3310). When the
+    -- stored start postdates the termination it is treated as UNMATCHED: hire_date
+    -- and tenure_days are NULL (the older stint's true start was overwritten and
+    -- is not recoverable here). tenure_days can therefore never be negative.
+    CASE WHEN cu.hire_date <= t.termination_date
+         THEN cu.hire_date END                  AS hire_date,
     CASE
         WHEN cu.hire_date IS NOT NULL
          AND t.termination_date IS NOT NULL
+         AND cu.hire_date <= t.termination_date
         THEN (t.termination_date - cu.hire_date)::int
         ELSE NULL
     END                                         AS tenure_days,
 
     CASE
         WHEN cu.hire_date IS NULL
-          OR t.termination_date IS NULL         THEN 'Unknown'
+          OR t.termination_date IS NULL
+          OR cu.hire_date > t.termination_date  THEN 'Unknown'
         WHEN (t.termination_date - cu.hire_date) <  90  THEN 'Short'
         WHEN (t.termination_date - cu.hire_date) < 365  THEN 'Mid'
         ELSE                                             'Long'
@@ -691,3 +718,15 @@ OFFERING ENRICHMENT (2026-06-03):
 --      AND is_offering_excluded = FALSE
 --    GROUP BY 1, 2, 3
 --    ORDER BY 1, 4 DESC;
+
+-- 11. Episode-binding guard (2026-07-01) — tenure_days can never be negative.
+--     Expect zero rows. Also: hire_date is NULL exactly when it would postdate
+--     the termination (unmatched episode).
+--    SELECT COUNT(*) AS negative_tenure_rows
+--    FROM silver.v_terminations_unified WHERE tenure_days < 0;
+
+-- 12. Fixture 136818 — the 2017 exit no longer shows tenure_days -3310;
+--     hire_date is NULL (2026 start postdates the 2017 termination).
+--    SELECT termination_id, termination_date, hire_date, tenure_days, tenure_band
+--    FROM silver.v_terminations_unified WHERE applicant_id = 136818
+--    ORDER BY termination_date;
