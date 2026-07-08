@@ -6,6 +6,96 @@ this file is the cross-view index of material, behavior-changing edits.
 
 ---
 
+## 2026-07-08 — Client attribution fix (hires / terminations / retention)
+
+**Files:** `v_terminations_unified.sql`, `v_hires_unified.sql`
+(`v_hire_retention.sql` unchanged — inherits client from `v_hires_unified`).
+**Deploy:** `deploy_hires.sql` (rebuilds `v_hires_unified` then `v_hire_retention`);
+`v_terminations_unified.sql` deploys standalone.
+**Fixtures:** applicant_id 1299933 (Mohamed Abdullahi, Nationwide → Univar),
+1436 (Broderick Johnson, EASE Logistics → Univar), 162331 (Galool Siad,
+Univar → Nationwide), 486356 (Dianna Hawkins, Univar → Nexeo Plastics).
+
+### Root cause
+
+`client_id` / `client_name` were resolved from **application-era** data, not from
+where the associate actually worked at the event:
+
+- `v_terminations_unified` led with `COALESCE(a.client_id, r.client_id,
+  udf.dept_client_id)` — `portal_applicants.client_id` is a single mutable row
+  (a stale value from an earlier application, e.g. a 2015 client, overrides
+  everything), and the AJL-resolved requisition can be a **pipeline** req whose
+  client is a bench label (e.g. a "Nationwide … Pipeline" req attached to a
+  Univar associate).
+- `v_hires_unified` (both branches) led with `COALESCE(r.client_id, a.client_id)`
+  — same pipeline-req exposure.
+- Both views already resolve the **point-in-time department** (ADP snapshot at
+  the event, then onboarding dept) and join `silver.v_department_offering`, which
+  carries a matching `client_id` / `client_name` — but that client was **discarded**,
+  used only for the `department_*` columns. So the client and department columns
+  of the same row could disagree (client "Nationwide", department "Univar …").
+
+This resolves the client-name residual limitation the 2026-07-01 entry explicitly
+left "as-is" (position_title is still applicant-mutable and remains open).
+
+### Changes
+
+1. **`v_terminations_unified`:** `client_id = COALESCE(vdo.client_id, a.client_id,
+   `*non-pipeline*`r.client_id, udf.dept_client_id)`; `client_name =
+   COALESCE(vdo.client_name, c.name, udf.dept_client_name)`.
+2. **`v_hires_unified` (confirmed + pending branches):** `client_id =
+   COALESCE(vdo.client_id, `*non-pipeline*`r.client_id, a.client_id /
+   ph.applicant_client_id)`; `client_name = COALESCE(vdo.client_name, c.name)`.
+3. **`portal_clients` join (`c`) made pipeline-aware** in every branch so `c.id`
+   equals the applicant/requisition tiers of the `client_id` COALESCE — `client_id`
+   and `client_name` therefore always resolve from the **same** tier (`vdo`, `c`,
+   and `udf` each supply a matched id/name pair).
+4. **`v_hire_retention`:** no edit — it selects `client_id` / `client_name` straight
+   from `v_hires_unified` and is corrected automatically.
+
+`vdo.client_id` (ADP = payroll system of record) is deterministic: `v_department_
+offering` dedupes to one client per department code (`DISTINCT ON (code)`, prefer
+active/highest-id), so no row fan-out.
+
+### Blast radius (measured, before → after)
+
+| Metric | Before | After |
+|---|---|---|
+| `v_terminations_unified` rows | 26,605 | 26,605 (unchanged) |
+| Terminations client re-attributed | — | **5,519** (~21%) |
+| `v_hires_unified` rows | 23,550 | 23,550 (unchanged) |
+| Hires client re-attributed | — | **3,319** (~14%) |
+| Rows newly NULL client (either view) | — | **0** |
+| Rows with `client_id` set but `client_name` NULL | 0 | **0** |
+| H1-2026 Univar terminations (client_id ∈ {567,577,581,591}) | 57 | **55** (+2 / −4) |
+| H1-2026 Univar hires | 42 | **41** |
+
+Re-attribution verified against ADP as corrections in **both** directions
+(H1-2026 Univar: +Abdullahi/+Broderick, −Wade Lewis/−Galool Siad/−Dianna Hawkins×2).
+
+### ⚠ Downstream consideration — client families
+
+The fix makes `client_name` more granular/accurate. Clients exist in **families**:
+Univar = `client_id {567, 577, 581, 591}` (Solutions / Monument Consulting / AZ / CA);
+Nationwide splits into PA and S&S variants. **Consumers filtering `client_name` on a
+single literal must switch to a `client_id` set** or they will undercount after deploy.
+
+### Residual limitations (documented, not fixed)
+
+- `position_title` may still reflect the applicant's most-recent placement
+  (`portal_applicants` is a single mutable row). Only client was corrected here.
+- ~4,500 pre-2025 changes are `onboarding_dept`-sourced (no ADP snapshot to confirm);
+  they rely on the onboarding department beating a possibly-stale applicant record —
+  defensible (matches the Broderick fixture) but not independently verifiable.
+
+### Validation
+
+Modified view bodies were executed live (SELECT-only, `dwreader`) and diffed against
+the current prod views: row counts unchanged, 0 new NULLs, 0 id-without-name,
+change counts and the four fixtures as above.
+
+---
+
 ## 2026-07-01 — Episode-mismatch enrichment fix (hires / terminations / retention)
 
 **Files:** `v_hires_unified.sql`, `v_terminations_unified.sql`, `v_hire_retention.sql`
