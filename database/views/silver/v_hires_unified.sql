@@ -4,6 +4,24 @@
 --          Mirrors v_terminations_unified design for symmetry; the two views
 --          are intended to join on applicant_id (+ position_id) in reports.
 -- Created:  2026-04-17
+-- Modified: 2026-07-08 — CLIENT ATTRIBUTION FIX (both branches). client_id/
+--           client_name were resolved from the hire's requisition client (which
+--           may be a PIPELINE req) then the applicant's client — application-era
+--           data that does not reflect where the hire actually landed. The
+--           offering enrichment already resolves the point-in-time department
+--           (ADP snapshot in [event_date, event_date+365], then onboarding dept)
+--           and joins silver.v_department_offering, which carries a MATCHING
+--           client_id/client_name that was being discarded. Fix: prefer
+--           vdo.client_id/vdo.client_name (ADP = payroll system of record),
+--           falling back to the (non-pipeline) requisition then applicant
+--           client. Applied identically to the confirmed and pending branches.
+--           Impact (23,550 rows): 0 newly NULL; ~14% re-attribute, verified
+--           against ADP (H1-2026 Univar hires 42→41). Mirrors the same-day fix
+--           in v_terminations_unified; v_hire_retention inherits client_id/
+--           client_name from this view and is corrected automatically. ⚠ Clients
+--           have FAMILIES (Univar = {567,577,581,591}; Nationwide has PA / S&S) —
+--           consumers filtering client_name on one literal must use a client_id
+--           set or they will undercount after this change.
 -- Modified: 2026-07-01 — EPISODE-BINDING FIX (defect 1 + new-episode visibility).
 --           (1) actual_start_date / start_iso_* / days_to_start on the CONFIRMED
 --               spine are now bound to the correct hire EPISODE. Previously they
@@ -554,10 +572,21 @@ SELECT
     r.is_pipeline,
 
     -- ── Client ────────────────────────────────────────────────────────────
-    -- Primary: requisition.client_id (req the hire was made against).
-    -- Fallback: applicant.client_id (rare — req missing a client).
-    COALESCE(r.client_id, a.client_id)          AS client_id,
-    c.name                                      AS client_name,
+    -- client_id resolution priority (2026-07-08 point-in-time fix):
+    --   1. v_department_offering.client_id  (vdo — client of the ADP point-in-
+    --      time / onboarding department resolved for the offering below; where
+    --      the hire actually landed)
+    --   2. portal_requisitions.client_id    (req the hire was made against;
+    --      PIPELINE reqs EXCLUDED — a bench label, not a real placement)
+    --   3. portal_applicants.client_id      (rare — req missing a client)
+    -- c is joined below on the pipeline-aware requisition/applicant id, so
+    -- c.name matches tiers 2–3; vdo carries its own matched id/name pair.
+    COALESCE(
+        vdo.client_id,
+        CASE WHEN NOT COALESCE(r.is_pipeline, FALSE) THEN r.client_id END,
+        a.client_id
+    )                                           AS client_id,
+    COALESCE(vdo.client_name, c.name)           AS client_name,
 
     -- ── Hire timing: decision date vs. actual start date ──────────────────
     -- EPISODE-BOUND (2026-07-01): es.episode_start is cu.hire_date attached ONLY
@@ -616,8 +645,13 @@ LEFT JOIN canonical_users cu
 LEFT JOIN bronze.portal_requisitions r
     ON r.id = rs.requisition_id
 
+-- Applicant/requisition-tier client name. Pipeline-aware (2026-07-08): a
+-- pipeline requisition's client is excluded so c.id matches tiers 2–3 of the
+-- client_id COALESCE, keeping c.name aligned with client_id.
 LEFT JOIN bronze.portal_clients c
-    ON c.id = COALESCE(r.client_id, a.client_id)
+    ON c.id = COALESCE(CASE WHEN NOT COALESCE(r.is_pipeline, FALSE)
+                            THEN r.client_id END,
+                       a.client_id)
 
 LEFT JOIN recruiters rec
     ON rec.id = rs.created_by_recruiter_id
@@ -718,8 +752,14 @@ SELECT
     r.is_pipeline,
 
     -- ── Client ────────────────────────────────────────────────────────────
-    COALESCE(r.client_id, ph.applicant_client_id)  AS client_id,
-    c.name                                      AS client_name,
+    -- Same priority as the confirmed branch (2026-07-08): PIT department client
+    -- first, then the (non-pipeline) inferred requisition, then the applicant's.
+    COALESCE(
+        vdo.client_id,
+        CASE WHEN NOT COALESCE(r.is_pipeline, FALSE) THEN r.client_id END,
+        ph.applicant_client_id
+    )                                           AS client_id,
+    COALESCE(vdo.client_name, c.name)           AS client_name,
 
     -- ── Hire timing: start date known, event date unknown ─────────────────
     ph.hire_date                                AS actual_start_date,
@@ -755,8 +795,12 @@ FROM pending_hires ph
 LEFT JOIN bronze.portal_requisitions r
     ON r.id = ph.requisition_id
 
+-- Pipeline-aware (2026-07-08): matches the confirmed branch so c.name aligns
+-- with tiers 2–3 of the pending client_id COALESCE.
 LEFT JOIN bronze.portal_clients c
-    ON c.id = COALESCE(r.client_id, ph.applicant_client_id)
+    ON c.id = COALESCE(CASE WHEN NOT COALESCE(r.is_pipeline, FALSE)
+                            THEN r.client_id END,
+                       ph.applicant_client_id)
 
 -- Offering enrichment, same chain as the confirmed branch but anchored on the
 -- start date (no event date exists). Requires idx_adp_tenure_applicant_snap.

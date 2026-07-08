@@ -2,6 +2,27 @@
 -- Silver Layer View: v_terminations_unified
 -- Purpose: Present Portal 1.0 termination records in Portal 2.0 structure
 -- Created:  2026-03-13
+-- Modified: 2026-07-08 — CLIENT ATTRIBUTION FIX. client_id/client_name were
+--           resolved from application-era data — portal_applicants.client_id,
+--           then a possibly-PIPELINE requisition's client (via AJL), then the
+--           onboarding department. A stale applicant record (e.g. a 2015 client
+--           that was never updated on reassignment) or a Nationwide pipeline
+--           requisition therefore overrode the client the associate ACTUALLY
+--           worked for at termination. The offering enrichment below already
+--           resolves the point-in-time department (ADP snapshot on/before the
+--           termination, then onboarding dept) and joins silver.v_department_
+--           offering, which carries a MATCHING client_id/client_name — that was
+--           being discarded. Fix: prefer vdo.client_id/vdo.client_name (ADP is
+--           the payroll system of record), falling back to the prior applicant→
+--           requisition→onboarding chain, with is_pipeline requisitions dropped
+--           from that fallback. Impact (26,605 rows): 0 newly NULL; ~21% re-
+--           attribute, verified against ADP as corrections in BOTH directions
+--           (H1-2026 Univar 57→55: +Abdullahi/+Broderick, −Wade Lewis/−Galool
+--           Siad/−Dianna Hawkins×2). Closes the client concern the 2026-07-01
+--           note below explicitly left "as-is". ⚠ Clients have FAMILIES — Univar
+--           = client_id {567,577,581,591}; Nationwide has PA / S&S variants — so
+--           consumers filtering client_name on a single literal must switch to a
+--           client_id set or they will undercount after this change.
 -- Modified: 2026-07-01 — EPISODE-BINDING FIX for tenure (defect 1). hire_date and
 --           tenure_days were decorated from canonical_users.hire_date — ONE
 --           mutable value per applicant (the current stint, overwritten on
@@ -97,11 +118,15 @@
 --   In Portal 2: positions and orders are separate (1:many)
 --                terminations → users → assignments → orders → positions
 --
---   Client resolution priority (portal_v1 branch):
---     1. portal_applicants.client_id         — set at placement; authoritative
---     2. portal_applicant_job_listings        — most recent AJL row; fallback
---        (only joined when portal_applicants.client_id IS NULL)
---     3. NULL                                 — true orphan; no placement data
+--   Client resolution priority (portal_v1 branch) — revised 2026-07-08:
+--     1. v_department_offering.client_id      — client of the point-in-time
+--                                               department (ADP snapshot at
+--                                               termination, then onboarding);
+--                                               ADP = payroll system of record
+--     2. portal_applicants.client_id          — application-era fallback
+--     3. portal_requisitions.client_id        — via AJL; PIPELINE reqs excluded
+--     4. portal_departments.client_id         — via onboarding_department_id
+--     5. NULL                                 — true orphan; no placement data
 --
 --   Source (now)    : bronze.portal_terminations  (source_system = 'portal_v1')
 --   Source (future) : cajetan.terminations        (source_system = 'cajetan')
@@ -393,13 +418,28 @@ SELECT
     r.is_pipeline,
 
     -- ── Client ────────────────────────────────────────────────────────────
-    -- client_id resolution priority:
-    --   1. portal_applicants.client_id    (authoritative when populated)
-    --   2. portal_requisitions.client_id  (resolved via AJL fallback)
-    --   3. portal_departments.client_id   (via portal_users.onboarding_department_id)
-    -- Final NULL only if all three sources fail.
-    COALESCE(a.client_id, r.client_id, udf.dept_client_id) AS client_id,
-    COALESCE(c.name, udf.dept_client_name)      AS client_name,
+    -- client_id resolution priority (2026-07-08 point-in-time fix):
+    --   1. v_department_offering.client_id  (vdo — client of the ADP point-in-
+    --      time / onboarding department resolved for the offering enrichment
+    --      below; the client the associate actually worked for at termination)
+    --   2. portal_applicants.client_id      (application-era; used when the
+    --      department chain does not resolve)
+    --   3. portal_requisitions.client_id    (via AJL fallback; PIPELINE reqs
+    --      EXCLUDED — a pipeline requisition's client is a bench label, not a
+    --      real placement)
+    --   4. portal_departments.client_id     (via portal_users.onboarding_department_id)
+    -- Final NULL only if every source fails.
+    -- c (portal_clients) is joined below on the pipeline-aware applicant/
+    -- requisition id, so c.name always matches tiers 2–3; vdo and udf each carry
+    -- their own matched id/name pair — so client_id and client_name always
+    -- resolve from the SAME tier.
+    COALESCE(
+        vdo.client_id,
+        a.client_id,
+        CASE WHEN NOT COALESCE(r.is_pipeline, FALSE) THEN r.client_id END,
+        udf.dept_client_id
+    )                                           AS client_id,
+    COALESCE(vdo.client_name, c.name, udf.dept_client_name) AS client_name,
 
     -- ── Tenure ────────────────────────────────────────────────────────────
     -- EPISODE-BOUND hire_date (2026-07-01): canonical_users.hire_date is ONE
@@ -500,10 +540,13 @@ LEFT JOIN ajl_fallback
 LEFT JOIN bronze.portal_requisitions r
     ON r.id = COALESCE(a.requisition_id, ajl_fallback.requisition_id)
 
--- Resolve client: primary from portal_applicants, fallback from requisition
--- (which was resolved via AJL above).
+-- Resolve the applicant/requisition-tier client name. Pipeline-aware: a
+-- pipeline requisition's client is a bench/pipeline label, not a real
+-- placement, so it is excluded here (and from client_id above). c.id therefore
+-- equals tiers 2–3 of the client_id COALESCE, keeping c.name aligned with it.
 LEFT JOIN bronze.portal_clients c
-    ON c.id = COALESCE(a.client_id, r.client_id)
+    ON c.id = COALESCE(a.client_id,
+                       CASE WHEN NOT COALESCE(r.is_pipeline, FALSE) THEN r.client_id END)
 
 -- User-department fallback: rescues terminations whose applicant chain
 -- dead-ends (no a.client_id, no r.client_id). Joined unconditionally —
@@ -587,11 +630,17 @@ field for late-entry analysis. Negative = future-dated record.
 record_created_at: backward-compat alias for termination_created_at. Prefer
 termination_created_at in new queries.
 
-CLIENT RESOLUTION (2026-03-17):
-  Primary:  portal_applicants.client_id (authoritative when populated; ~2.4% of rows)
-  Fallback: most recent portal_applicant_job_listings row → portal_requisitions.client_id
-            (covers ~14.7% of terminations otherwise left with NULL client_name)
-  Orphan:   ~14.9% of terminations have no client data in either source
+CLIENT RESOLUTION (revised 2026-07-08 — point-in-time fix):
+  1. v_department_offering.client_id — client of the ADP point-in-time /
+     onboarding department (the client worked at termination; ADP = system of record)
+  2. portal_applicants.client_id     — application-era fallback
+  3. portal_requisitions.client_id   — via AJL fallback; PIPELINE reqs EXCLUDED
+  4. portal_departments.client_id    — via onboarding_department_id
+  5. NULL                            — true orphan; no source resolves
+  Prior (pre-2026-07-08) behavior led with application-era data, so stale
+  applicant records and Nationwide pipeline reqs mis-attributed the client.
+  ⚠ CLIENT FAMILIES: report filters must use a client_id SET, not one name —
+    Univar = {567,577,581,591}; Nationwide has PA / S&S variants.
   Requires: idx_ajl_applicant_id on portal_applicant_job_listings(applicant_id, created_at DESC)
 
 Portal 1: position_id = order_id (1:1 — same requisition).
