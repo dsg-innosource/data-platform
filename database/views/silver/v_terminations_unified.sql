@@ -441,6 +441,12 @@ SELECT
     )                                           AS client_id,
     COALESCE(vdo.client_name, c.name, udf.dept_client_name) AS client_name,
 
+    -- Curated client-FAMILY rollup from v_department_offering (sourced from
+    -- department_reporting_map.client, resolved on the same point-in-time
+    -- department_code). Use this for client-level reporting — e.g. "Univar"
+    -- resolves the whole family; client_name above is the granular portal entity.
+    vdo.reporting_client,
+
     -- ── Tenure ────────────────────────────────────────────────────────────
     -- EPISODE-BOUND hire_date (2026-07-01): canonical_users.hire_date is ONE
     -- mutable value per applicant (the CURRENT stint, overwritten on rehire). If

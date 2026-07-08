@@ -588,6 +588,11 @@ SELECT
     )                                           AS client_id,
     COALESCE(vdo.client_name, c.name)           AS client_name,
 
+    -- Curated client-FAMILY rollup from v_department_offering (department_
+    -- reporting_map.client, resolved on the same point-in-time department_code).
+    -- Use for client-level reporting; client_name above is the granular entity.
+    vdo.reporting_client,
+
     -- ── Hire timing: decision date vs. actual start date ──────────────────
     -- EPISODE-BOUND (2026-07-01): es.episode_start is cu.hire_date attached ONLY
     -- to the applicant's latest Hired event and only when the start is on/before
@@ -760,6 +765,9 @@ SELECT
         ph.applicant_client_id
     )                                           AS client_id,
     COALESCE(vdo.client_name, c.name)           AS client_name,
+
+    -- Curated client-FAMILY rollup (same column/order as the confirmed branch).
+    vdo.reporting_client,
 
     -- ── Hire timing: start date known, event date unknown ─────────────────
     ph.hire_date                                AS actual_start_date,

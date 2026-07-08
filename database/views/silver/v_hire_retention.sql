@@ -27,6 +27,11 @@
   Checkpoints: 6w = 42d, 8w = 56d, 15w = 105d.
 
   Created : 2026-06-03
+  Modified: 2026-07-08 — Pass through `reporting_client` from v_hires_unified (the
+            curated client-family rollup; see v_department_offering). Added to the
+            hires CTE; the final SELECT hr.* surfaces it automatically. Use it for
+            client-level retention (resolves a client's whole family); client_name
+            remains the granular portal entity.
   Modified: 2026-07-01 — NO-SHOW LEAKAGE FIX (defect 2). term_match only matches
             is_excluded = false terminations, so an EXCLUDED "Never started /
             delayed" (termination_reason_id = 13) cancellation did NOT deactivate
@@ -50,7 +55,7 @@ CREATE OR REPLACE VIEW silver.v_hire_retention AS
 WITH hires AS (
   SELECT h.source_system, h.event_id AS hire_event_id, h.applicant_id, h.full_name,
          h.actual_start_date, h.start_iso_year, h.start_iso_week,
-         h.client_id, h.client_name, h.recruiter_id, h.recruiter_name,
+         h.client_id, h.client_name, h.reporting_client, h.recruiter_id, h.recruiter_name,
          h.department_code, h.department_id, h.department_name,
          h.offering, h.service, h.is_offering_excluded, h.is_pipeline
   FROM silver.v_hires_unified h

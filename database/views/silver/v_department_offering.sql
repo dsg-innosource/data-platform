@@ -5,6 +5,17 @@
 --          department code, with the offering dimension joined in from
 --          silver.department_reporting_map.
 -- Created:  2026-06-03
+-- Modified: 2026-07-08 — Added `reporting_client` — the curated client ROLLUP
+--           from silver.department_reporting_map.client. This is the normalized
+--           reporting family (e.g. "Univar Solutions" collapses the portal
+--           entities Monument Consulting Univar, …AZ, …CA, and even NEXEO/
+--           SUPERIOR into one label). Distinct from client_id/client_name, which
+--           remain the granular *portal* client entity. Consuming views
+--           (v_hires_unified, v_terminations_unified, v_hire_retention) surface
+--           it so client-level "how is <client> doing" questions resolve the
+--           whole family via the curated map instead of a fragile name match.
+--           Same join/grain as offering/service (no fan-out); NULL for codes not
+--           in department_reporting_map, exactly like offering.
 -- Modified: 2026-06-03 — Two fixes after first deploy:
 --           (1) Dedup bronze.portal_departments by `code` to prevent fan-out
 --               in consuming views. portal_departments has 11 codes with two
@@ -69,17 +80,20 @@
 -- ----------------------------------------------------------------------------
 -- DEPLOYMENT ORDER
 -- ----------------------------------------------------------------------------
--- v_hires_unified and v_terminations_unified depend on this view. The
--- CASCADE on the DROP below drops them as a side effect. You MUST redeploy
--- both unified views immediately after running this file, in this order:
+-- v_hires_unified and v_terminations_unified depend on this view, and
+-- v_hire_retention depends on BOTH of those. The CASCADE on the DROP below
+-- therefore drops all THREE dependents as a side effect. You MUST redeploy
+-- every dependent immediately after running this file, in this order:
 --
---   1. database/views/silver/v_department_offering.sql   (this file — CASCADE drops dependents)
+--   1. database/views/silver/v_department_offering.sql   (this file — CASCADE drops all dependents)
 --   2. database/views/silver/v_hires_unified.sql         (recreates v_hires_unified)
 --   3. database/views/silver/v_terminations_unified.sql  (recreates v_terminations_unified)
+--   4. database/views/silver/v_hire_retention.sql        (recreates v_hire_retention — depends on 2 & 3)
 --
--- If you do not run steps 2 and 3, the unified views will be missing until
--- you do. Existing queries against them will fail with "relation does not
--- exist" until they're recreated.
+-- If you do not run steps 2–4, the dependent views will be missing until you
+-- do. Existing queries against them will fail with "relation does not exist"
+-- until they're recreated. (Step 4 was added 2026-06-29 when v_hire_retention
+-- was introduced; CASCADE drops it too.)
 -- ----------------------------------------------------------------------------
 
 DROP VIEW IF EXISTS silver.v_department_offering CASCADE;
@@ -110,7 +124,8 @@ combined AS (
         d.client_id,
         c.name                              AS client_name,
         m.offering,
-        m.service
+        m.service,
+        m.client                            AS reporting_client
     FROM dedup_portal_depts                 d
     LEFT JOIN bronze.portal_clients         c ON c.id = d.client_id
     LEFT JOIN silver.department_reporting_map m ON m.department_number = d.code
@@ -129,7 +144,8 @@ combined AS (
         NULL::bigint                        AS client_id,
         NULL::character varying             AS client_name,
         m.offering,
-        m.service
+        m.service,
+        m.client                            AS reporting_client
     FROM silver.department_reporting_map    m
     WHERE NOT EXISTS (
         SELECT 1 FROM dedup_portal_depts d WHERE d.code = m.department_number
@@ -141,6 +157,7 @@ SELECT
     department_name,
     client_id,
     client_name,
+    reporting_client,
     offering,
     service,
     COALESCE(
@@ -161,6 +178,12 @@ One row per department code. Combines two streams:
 
 Map orphans have department_id, client_id, client_name = NULL but their
 offering / service / is_excluded are populated normally.
+
+reporting_client (2026-07-08): the curated client ROLLUP from
+department_reporting_map.client (e.g. "Univar Solutions" collapses Monument
+Consulting Univar / …AZ / …CA / NEXEO-SUPERIOR into one label). Use this for
+client-family reporting; client_name is the granular portal entity. NULL for
+codes absent from department_reporting_map, same as offering.
 
 is_excluded: TRUE when the offering is one of Interns / Long-Term / Internal / HRMS
 (not included in Net Gain). Consuming views surface this as is_offering_excluded;

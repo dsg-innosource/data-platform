@@ -6,6 +6,59 @@ this file is the cross-view index of material, behavior-changing edits.
 
 ---
 
+## 2026-07-08 — Add `reporting_client` client-family rollup (all four views)
+
+**Files:** `v_department_offering.sql` (source column), `v_terminations_unified.sql`,
+`v_hires_unified.sql`, `v_hire_retention.sql` (surface it).
+**Deploy:** changing `v_department_offering` means a full-chain rebuild — its
+`DROP … CASCADE` drops all three dependents; redeploy order:
+`v_department_offering` → `v_hires_unified` → `v_terminations_unified` → `v_hire_retention`.
+
+### Why
+
+`client_name` is the **granular portal client entity**, and those entities come in
+**families**: "Univar" is four separate portal clients (Univar Solutions, Monument
+Consulting Univar, …AZ, …CA — plus NEXEO/SUPERIOR rolls up to Univar too). A
+client-level question ("how is Univar doing?") that matches a single `client_name`
+literal undercounts, and a fuzzy `ILIKE '%univar%'` misses oddly-named members
+(NEXEO/SUPERIOR has no "Univar" in the name).
+
+`silver.department_reporting_map` already carries the curated rollup in its `client`
+column (all Univar departments → `Univar Solutions`), but `v_department_offering`
+was dropping it — pulling only `offering`/`service` from the map. So the rollup
+existed but never reached the views.
+
+### Change
+
+- `v_department_offering`: expose `department_reporting_map.client` as a new
+  `reporting_client` column (both UNION streams + final SELECT). Same join and
+  grain as `offering`/`service` — no fan-out; NULL for codes absent from the map.
+- `v_terminations_unified`, `v_hires_unified` (both branches): select
+  `vdo.reporting_client` (resolved on the same point-in-time `department_code`).
+- `v_hire_retention`: pass `h.reporting_client` through the `hires` CTE (`SELECT hr.*`
+  surfaces it automatically).
+
+### Client model — which field to use (reference)
+
+| Field | Meaning | Use for |
+|---|---|---|
+| `client_id` / `client_name` | Granular **portal** client entity (made point-in-time correct in the fix below) | Operational, entity-level queries; joins to orders/positions |
+| `reporting_client` | Curated client-**family** rollup from `department_reporting_map.client` | Client-level reporting / "how is *<client>* doing" — resolves the whole family |
+
+**Guidance for report/question interpretation:** resolve a named client (Univar,
+Nationwide, Goodyear, …) against **`reporting_client`**, not `client_name`. E.g.
+`WHERE reporting_client = 'Univar Solutions'` returns the full family. Fall back to
+`client_name` only when a specific operational entity is genuinely intended.
+
+### Validation
+
+Modified `v_department_offering` body run live: `reporting_client` present, 1 row per
+code (no fan-out), Univar family → single `Univar Solutions`. End-to-end via the
+consuming views' `department_code`: fixtures resolve correctly (Abdullahi/Broderick →
+Univar Solutions, Galool/Wade → Nationwide, Dianna Hawkins → Nexeo Plastics).
+
+---
+
 ## 2026-07-08 — Client attribution fix (hires / terminations / retention)
 
 **Files:** `v_terminations_unified.sql`, `v_hires_unified.sql`
