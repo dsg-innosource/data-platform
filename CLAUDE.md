@@ -62,6 +62,19 @@ There are four homes for SQL in this repo, each with a distinct purpose:
 
 **Key distinction:** Views and other static DB objects go in `database/`, not `transforms/`. A view is a stored query definition, not a transform process. Report queries reference but never define those views.
 
+### Querying the warehouse (ad-hoc)
+
+For quick, interactive investigation against the warehouse — inspecting silver views, spot-checking data — use the shared helper instead of writing a new connection script each time:
+
+```bash
+.venv/bin/python shared/query.py "SELECT count(*) FROM silver.v_terminations_unified"
+# multi-line SQL via stdin:
+echo "SELECT reporting_client, count(*) FROM silver.v_terminations_unified GROUP BY 1" \
+  | .venv/bin/python shared/query.py
+```
+
+It reads the `DB_*` credentials from `.env` (the read-only `dwreader` role) and prints an aligned table. It is **read-only** — writes and DDL fail at the database. Do NOT use it to deploy: view/proc DDL is deployed by running the files under `database/` (see `database/views/silver/silver_schema.md` for the deploy order, including the `v_hire_retention` dependency). Requires `psycopg2` (in `requirements.txt`; present in the `.venv` virtualenv).
+
 ### Configuration
 
 All configuration is in `config.yaml` files per process, or environment variables for secrets. Database credentials come from `.env` (local) or Dagster Cloud secrets (production). Never hardcode credentials.
@@ -145,6 +158,7 @@ The interactive Claude prompts at `cowork/prompts/reporting/*.md` (in the cowork
 | `REPO_RECOMMENDATIONS.md` | Full reorganization plan with rationale for all decisions |
 | `metabase/catalog.yaml` | Maps DP-IDs to Metabase card IDs and SQL files |
 | `shared/database.yaml` | Shared database connection configuration |
+| `shared/query.py` | Ad-hoc **read-only** SQL against the warehouse: `.venv/bin/python shared/query.py "SELECT ..."` |
 | `.env` | Local environment variables (gitignored) |
 | `requirements.txt` | Python dependencies |
 | `reporting/MIGRATION.md` | Reporting framework phase tracker — what's done, what's next |
