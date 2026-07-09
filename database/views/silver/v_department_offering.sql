@@ -89,8 +89,9 @@
 --   2. database/views/silver/v_hires_unified.sql         (recreates v_hires_unified)
 --   3. database/views/silver/v_terminations_unified.sql  (recreates v_terminations_unified)
 --   4. database/views/silver/v_hire_retention.sql        (recreates v_hire_retention — depends on 2 & 3)
+--   5. database/views/silver/v_active_roster.sql         (recreates v_active_roster — depends on this view)
 --
--- If you do not run steps 2–4, the dependent views will be missing until you
+-- If you do not run steps 2–5, the dependent views will be missing until you
 -- do. Existing queries against them will fail with "relation does not exist"
 -- until they're recreated. (Step 4 was added 2026-06-29 when v_hire_retention
 -- was introduced; CASCADE drops it too.)
