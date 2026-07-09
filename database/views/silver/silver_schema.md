@@ -6,6 +6,25 @@ this file is the cross-view index of material, behavior-changing edits.
 
 ---
 
+## 2026-07-09 — New view: `v_active_roster` (per-associate active roster + tenure)
+
+**Files:** `v_active_roster.sql` (new); `v_department_offering.sql` (deploy-note only — added as CASCADE step 5).
+**Deploy:** standalone — run `v_active_roster.sql` (DROP IF EXISTS + CREATE). Depends on `v_department_offering`, so a future `v_department_offering` CASCADE redeploy drops it; recreate after the unified views (now step 5 in that file's sequence).
+
+### Why
+
+`v_hire_retention` was being used to answer "active associate tenure," but it's a retention-CHECKPOINT surface capped to hire starts in the trailing 365 days, so it excludes long-tenured actives (Goodyear InfoLink: it showed 8 of 40 active; the 32 tenured >1yr were dropped by the cap). `fact_active_headcount` is aggregate counts only; `v_oso_roster_unified` is OSO-only. No surface answered "who is active now and how long have they been here" across all clients.
+
+### What
+
+New `silver.v_active_roster`: one row per active ADP position (`position_id` unique) as of the latest `bronze.adp_tenure_history` snapshot (`position_status='Active'`). ADP-native — ~18% of active rows have NULL `applicant_id`, so name/dept/client come from ADP and `applicant_id` is a nullable link to `v_hires_unified`/`v_terminations_unified`. Client resolves via `v_department_offering` (matches hires/terminations) with raw `adp_client`/`adp_client_code` as a completeness fallback for unmapped departments. Tenure bands match siblings (Short<90 / Mid<365 / Long≥365). Excludes `regular_pay_rate` and `home_phone` (PII).
+
+### Validation
+
+Live: 2,082 active positions / 1,715 distinct applicants as of the latest snapshot; 246 rows have an unmapped department (reporting_client NULL — surfaces the gap). Goodyear InfoLink reproduces 40 active (8 started <365d = what `v_hire_retention` shows; 32 tenured ≥1yr excluded by its cap), reconciling the Minnie discrepancy — and correctly counting the null-`applicant_id` actives an applicant-keyed query drops.
+
+---
+
 ## 2026-07-08 — Add `reporting_client` client-family rollup (all four views)
 
 **Files:** `v_department_offering.sql` (source column), `v_terminations_unified.sql`,
