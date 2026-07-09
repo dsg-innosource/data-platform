@@ -2,6 +2,18 @@
 -- Silver Layer View: v_terminations_unified
 -- Purpose: Present Portal 1.0 termination records in Portal 2.0 structure
 -- Created:  2026-03-13
+-- Modified: 2026-07-09 — ADP-PIT STALE-STINT TIEBREAK. The point-in-time ADP
+--           lookup (feeds department_code → client, reporting_client, offering)
+--           took the latest snapshot ≤ termination_date with no tiebreak. ADP
+--           carries one row per (applicant, position) per snapshot, so a person
+--           with an OLD closed stint at one client plus a CURRENT stint at
+--           another has two rows on that snapshot, and the pick was arbitrary —
+--           sometimes the stale terminated stint. E.g. Galool Siad resolved to a
+--           2025 Nationwide stint and Dianna Hawkins to a 2021 Nexeo stint,
+--           though both actually converted at Univar; they dropped off the Univar
+--           conversion list. Fix: tiebreak to the current stint — prefer
+--           position_status='Active', then most-recent termination_date. Corrects
+--           27 ADP-era term rows; client/reporting_client/offering all follow.
 -- Modified: 2026-07-09 — DUPLICATE-CONVERSION DEDUP. A "Hired by client"
 --           conversion (termination_reason_id = 1) is terminal and unique per
 --           placement, but the same conversion was sometimes entered on more
@@ -634,12 +646,22 @@ LEFT JOIN recruiters rec
 -- 1. ADP point-in-time: latest snapshot at or before the termination_date
 --    for the applicant. Reflects the department where they were paid in
 --    their final pay period. Requires idx_adp_tenure_applicant_snap.
+--    STALE-STINT TIEBREAK (2026-07-09): ADP carries one row per (applicant,
+--    position) per snapshot, so someone with an OLD closed stint at one client
+--    plus a CURRENT stint at another has TWO rows on the latest snapshot. Order
+--    by snapshot alone left the pick arbitrary and it sometimes grabbed the
+--    stale terminated stint's department (e.g. Galool Siad resolved to a 2025
+--    Nationwide stint, Dianna Hawkins to a 2021 Nexeo stint, when both actually
+--    converted at Univar). Tiebreak to the CURRENT stint: prefer Active, then
+--    the most-recently-ended position.
 LEFT JOIN LATERAL (
     SELECT TRIM(adp.home_department_code)       AS dept_code
     FROM bronze.adp_tenure_history adp
     WHERE adp.applicant_id   = cu.applicant_id
       AND adp.snapshot_date <= t.termination_date
-    ORDER BY adp.snapshot_date DESC
+    ORDER BY adp.snapshot_date DESC,
+             (adp.position_status = 'Active') DESC,
+             adp.termination_date DESC NULLS FIRST
     LIMIT 1
 ) adp_pit ON TRUE
 

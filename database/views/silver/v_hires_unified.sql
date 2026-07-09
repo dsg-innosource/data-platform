@@ -4,6 +4,14 @@
 --          Mirrors v_terminations_unified design for symmetry; the two views
 --          are intended to join on applicant_id (+ position_id) in reports.
 -- Created:  2026-04-17
+-- Modified: 2026-07-09 — ADP-PIT STALE-STINT TIEBREAK (both branches). The
+--           point-in-time ADP lookup took the earliest post-event snapshot with
+--           no tiebreak; when that snapshot carries multiple positions (an old
+--           closed stint + the current one) the pick was arbitrary and could
+--           grab the stale terminated stint, mis-resolving department → client /
+--           reporting_client / offering. Fix: prefer the current stint
+--           (position_status='Active', then most-recent termination_date).
+--           Mirrors the same-day fix in v_terminations_unified.
 -- Modified: 2026-07-08 — CLIENT ATTRIBUTION FIX (both branches). client_id/
 --           client_name were resolved from the hire's requisition client (which
 --           may be a PIPELINE req) then the applicant's client — application-era
@@ -698,7 +706,14 @@ LEFT JOIN LATERAL (
     WHERE adp.applicant_id   = rs.applicant_id
       AND adp.snapshot_date >= DATE(rs.created_at)
       AND adp.snapshot_date <= DATE(rs.created_at) + 365
-    ORDER BY adp.snapshot_date
+    -- STALE-STINT TIEBREAK (2026-07-09): a person with an old closed stint at
+    -- one client plus a current stint at another has two rows on the earliest
+    -- post-hire snapshot; without a tiebreak the pick was arbitrary and could
+    -- grab the stale terminated stint. Prefer the current stint (Active, then
+    -- most-recently-ended). Mirrors v_terminations_unified.
+    ORDER BY adp.snapshot_date,
+             (adp.position_status = 'Active') DESC,
+             adp.termination_date DESC NULLS FIRST
     LIMIT 1
 ) adp_pit ON TRUE
 
@@ -817,7 +832,12 @@ LEFT JOIN LATERAL (
     FROM bronze.adp_tenure_history adp
     WHERE adp.applicant_id   = ph.applicant_id
       AND adp.snapshot_date >= ph.hire_date
-    ORDER BY adp.snapshot_date
+    -- STALE-STINT TIEBREAK (2026-07-09): prefer the current stint (Active, then
+    -- most-recently-ended) when a snapshot has multiple positions. See the
+    -- confirmed branch above and v_terminations_unified.
+    ORDER BY adp.snapshot_date,
+             (adp.position_status = 'Active') DESC,
+             adp.termination_date DESC NULLS FIRST
     LIMIT 1
 ) adp_pit ON TRUE
 
