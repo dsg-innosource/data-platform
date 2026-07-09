@@ -2,6 +2,26 @@
 -- Silver Layer View: v_terminations_unified
 -- Purpose: Present Portal 1.0 termination records in Portal 2.0 structure
 -- Created:  2026-03-13
+-- Modified: 2026-07-09 — DUPLICATE-CONVERSION DEDUP. A "Hired by client"
+--           conversion (termination_reason_id = 1) is terminal and unique per
+--           placement, but the same conversion was sometimes entered on more
+--           than one date (a premature bulk entry — e.g. a whole OH CAP class
+--           stamped 2026-04-17 — then the real record as each associate actually
+--           converted weeks later). Different dates, so they survived the
+--           same-day dedup and double-counted conversions (Net Gain inflation).
+--           Added the terminations_deduped_conv CTE: drop a CONV when a LATER
+--           CONV exists for the same user within 90 days, keeping the latest.
+--           Validated against ADP (payroll system of record): the kept latest
+--           date equals ADP's CLIENT HIRE termination_date in 7/7 duplicate
+--           clusters; genuine re-conversions after a rehire are >1,400 days
+--           apart and untouched (Dianna Hawkins' 2021 CONV and Galool Siad's
+--           2022 CONV both preserved). Drops 8 rows (26,605 → 26,597); 6 are the
+--           Univar/Nexeo 2026-04-17 batch. v_hire_retention reads this view, so
+--           its earliest-term match self-corrects to the true (later) date.
+--           Non-CONV multi-terminations are NOT touched — many are genuine
+--           rehires whose hire event was never logged (confirmed via ADP payroll
+--           snapshots between the terms), so a general dedup would drop real
+--           terminations. See DESIGN NOTES "Duplicate termination guard".
 -- Modified: 2026-07-08 — CLIENT ATTRIBUTION FIX. client_id/client_name were
 --           resolved from application-era data — portal_applicants.client_id,
 --           then a possibly-PIPELINE requisition's client (via AJL), then the
@@ -105,9 +125,11 @@
 --   of either view creates it; subsequent deploys are no-ops via IF NOT EXISTS.
 -- ============================================================================
 -- DESIGN NOTES:
---   Grain      : One row per termination event, AFTER collapsing duplicate
---                same-day termination records for the same person — see the
---                terminations_deduped CTE.
+--   Grain      : One row per termination event, AFTER (a) collapsing duplicate
+--                same-day termination records for the same person (see the
+--                terminations_deduped CTE) and (b) dropping premature duplicate
+--                CONVERSIONS re-entered on a later date (see the
+--                terminations_deduped_conv CTE, added 2026-07-09).
 --   Vocabulary : Cajetan (Portal 2) field naming throughout.
 --                Portal 1 source fields aliased to match.
 --
@@ -190,13 +212,25 @@
 --                applicant_id. canonical_users CTE resolves to one row per
 --                applicant_id — prefers is_active = TRUE, then latest created_at.
 --
---   Duplicate termination guard:
---                bronze.portal_terminations contains same-day double-submits
---                (~72 groups / ~76 extra rows) — the same termination entered
---                twice for one person on one day. terminations_deduped CTE
---                collapses these to one row per (user_id, termination_date),
---                keeping the most-recently-updated copy. Without it, COUNT(*)
---                over-counts terminations and Net Gain understates.
+--   Duplicate termination guard (two passes):
+--                (a) SAME-DAY double-submits (~72 groups / ~76 extra rows) — the
+--                same termination entered twice for one person on one day.
+--                terminations_deduped collapses these to one row per
+--                (user_id, termination_date), keeping the most-recently-updated
+--                copy.
+--                (b) PREMATURE DUPLICATE CONVERSIONS (added 2026-07-09) — a
+--                "Hired by client" conversion re-entered on a LATER date (a
+--                premature batch entry, then the real one). terminations_
+--                deduped_conv drops a CONV when a later CONV exists for the same
+--                user within 90 days, keeping the latest (ADP-validated as the
+--                true conversion date). Drops 8 rows.
+--                Without both, COUNT(*) over-counts terminations / conversions
+--                and Net Gain is distorted.
+--                NOT DEDUPED: non-CONV multi-terminations (VOL/INVOL/EXCLUDED)
+--                far apart in time — many are genuine rehires whose hire event
+--                was never logged (confirmed via ADP payroll snapshots between
+--                the terms). A general "drop terms with no rehire between" rule
+--                would delete real terminations, so it is deliberately avoided.
 --
 -- Portal 1 → Cajetan field mapping (reference for future UNION branch):
 --   portal_requisitions.id               → orders.id / positions.id  (order_id / position_id)
@@ -300,6 +334,37 @@ terminations_deduped AS (
         FROM bronze.portal_terminations t
     ) ranked
     WHERE dup_rn = 1
+),
+
+-- 0b. Drop premature duplicate CONVERSIONS (added 2026-07-09).
+--    A "Hired by client" conversion (termination_reason_id = 1) is terminal and
+--    unique per placement — you cannot be converted twice without being rehired
+--    by InnoSource in between. But the same conversion is sometimes entered more
+--    than once on DIFFERENT dates (a premature bulk entry, e.g. a whole OH CAP
+--    class stamped 2026-04-17, then the real record as each associate actually
+--    converts weeks later). Those survive the same-day dedup above because the
+--    dates differ, double-counting conversions and inflating Net Gain.
+--    Rule: drop a CONV when a LATER CONV exists for the same user_id within
+--    90 days — keep the latest. Validated against ADP (the payroll system of
+--    record): the kept (latest) date equals ADP's CLIENT HIRE termination_date
+--    in 7/7 duplicate clusters; the earlier entries were premature/wrong.
+--    A 90-day window (not a rehire lookup) keeps this self-contained: genuine
+--    re-conversions after a real rehire are years apart (observed min gap
+--    >1,400 days) and are untouched, so no hires-view dependency is needed.
+terminations_deduped_conv AS (
+    SELECT d.*
+    FROM terminations_deduped d
+    WHERE NOT (
+        d.termination_reason_id = 1
+        AND EXISTS (
+            SELECT 1
+            FROM terminations_deduped d2
+            WHERE d2.user_id               = d.user_id
+              AND d2.termination_reason_id = 1
+              AND d2.termination_date  >  d.termination_date
+              AND d2.termination_date <=  d.termination_date + 90
+        )
+    )
 ),
 
 -- 1. Resolve duplicate portal_users → one canonical row per applicant_id.
@@ -523,7 +588,7 @@ SELECT
         ELSE                                         NULL
     END                                             AS offering_source
 
-FROM terminations_deduped t
+FROM terminations_deduped_conv t
 
 INNER JOIN bronze.portal_termination_reasons tr
     ON tr.id = t.termination_reason_id
@@ -785,3 +850,22 @@ OFFERING ENRICHMENT (2026-06-03):
 --    SELECT termination_id, termination_date, hire_date, tenure_days, tenure_band
 --    FROM silver.v_terminations_unified WHERE applicant_id = 136818
 --    ORDER BY termination_date;
+
+-- 13. Duplicate-conversion dedup (2026-07-09) — no user has two CONV rows within
+--     90 days of each other. Expect zero rows.
+--    SELECT a.user_id
+--    FROM silver.v_terminations_unified a
+--    JOIN silver.v_terminations_unified b
+--      ON b.user_id = a.user_id
+--     AND b.termination_category = 'CONV' AND a.termination_category = 'CONV'
+--     AND b.termination_date > a.termination_date
+--     AND b.termination_date <= a.termination_date + 90;
+
+-- 14. Fixtures — the premature 2026-04-17 conversions are gone; the surviving
+--     row carries the ADP-confirmed later date (Jamie Hart 05-08, Cassidy Brown
+--     06-01, Dianna Hawkins 05-15). Genuine repeats preserved: Galool Siad keeps
+--     both 2022 and 2026 CONVs.
+--    SELECT full_name, termination_date, termination_category
+--    FROM silver.v_terminations_unified
+--    WHERE full_name IN ('Jamie Hart','Cassidy Brown','Dianna Hawkins','Galool Siad')
+--    ORDER BY full_name, termination_date;
