@@ -6,6 +6,27 @@ this file is the cross-view index of material, behavior-changing edits.
 
 ---
 
+## 2026-07-14 — `v_hires_unified`: cross-req double-count fix + termination-predates-hire exclusion
+
+**Files:** `v_hires_unified.sql`.
+**Deploy:** full hires chain — `v_hire_retention` depends on this view, so redeploy order is drop `v_hire_retention` → rebuild `v_hires_unified` → rebuild `v_hire_retention` (i.e. run `deploy_hires.sql`, or the three steps manually). Both fixes flow into `v_hire_retention`'s start denominator.
+
+### Why
+
+Reconciling the warehouse against Portal's `rsp_rpt_next_hires_report` ("Next Hires" spreadsheet) surfaced two hire-count defects. (1) The 2026-07-01 requisition-scoped pending guard only suppresses a pending row when a Hired event exists on the **same** inferred (Accept Offer) requisition — so when someone accepts an offer on a *pipeline* req but the Hired event is logged on a *different placement* req for the same start, the pending row survived alongside the confirmed row and the same start was counted twice (885 applicants, all cross-order; e.g. Prescribe Fit applicant 1428339 on reqs 9287/9393, both 2026-07-13). (2) Portal excludes a hire whose stored `terminated_date` pre-dates its `hire_date` (a stale prior-stint termination left on the record); the warehouse had no equivalent and counted it.
+
+### What
+
+(1) **Cross-requisition de-dup.** `applicant_latest_event` now carries `latest_event_date`; the `pending_hires` CTE gains a second suppression guard — drop the pending row when the confirmed spine already carries this start, i.e. the applicant's latest Hired event falls on/before `hire_date + 365` (the episode window that stamps `episode_start = hire_date` on that confirmed row). Genuine new stints (>365d after the last logged event) are preserved; fully-unlogged fresh classes (no event at all) are untouched. Invariant added: no `(applicant_id, actual_start_date)` is both confirmed and pending.
+
+(2) **Termination-predates-hire exclusion.** `canonical_users` now carries `terminated_date`; both branches adopt Portal's guard `hire_date <= terminated_date OR terminated_date IS NULL`. Applied on the current-episode start only (`es.episode_start` on confirmed — NULL on older events, so deep history is intact; `ph.hire_date` on pending).
+
+### Validation
+
+Read-only against prod pre-deploy and re-verified post-deploy: confirmed+pending same-start pairs 885 → **0**; termination-predates-hire rows → **0** (46 removed: 39 confirmed current-episode + 7 pending); current ISO week 29 went 21 → **19 rows**, both duplicate Prescribe Fit rows gone; `v_hire_retention` rebuilt (1,717 rows). Matches Portal's Next Hires report person-for-person on this dimension. New regression checks 2e3 / 2e4 added to `v_hires_unified.sql`.
+
+---
+
 ## 2026-07-09 — New view: `v_active_roster` (per-associate active roster + tenure)
 
 **Files:** `v_active_roster.sql` (new); `v_department_offering.sql` (deploy-note only — added as CASCADE step 5).
