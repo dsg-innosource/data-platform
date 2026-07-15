@@ -1,7 +1,7 @@
 -- ============================================================================
 -- Silver Layer View: v_positions_unified v3 (3NF REFACTOR)
 -- Purpose: Present Portal 1.0 requisitions in Portal 2.0 POSITION structure
--- Updated: 2025-02-25
+-- Updated: 2026-07-15 (add number_of_openings + number_of_other_vendors)
 -- ============================================================================
 -- 3NF DESIGN NOTES:
 --   A "position" is the JOB TEMPLATE — who, what, where, and how to screen.
@@ -84,8 +84,20 @@ SELECT
     -- -------------------------------------------------------------------------
     -- Capacity Template  (class_size is a position-level template in P2)
     -- (number_of_openings for a specific request lives on the order)
+    --
+    -- The three seat fields split "total available seats" from "our seats":
+    --   class_size              = total seats available across ALL vendors on the req
+    --   number_of_openings      = OUR seats (basis for the recruiter goal)
+    --   number_of_other_vendors = other staffing vendors on the req
+    -- On the current data, class_size >= number_of_openings on every populated
+    -- open, non-pipeline row (equal on single-vendor reqs). number_of_openings is
+    -- also on v_orders_unified as the per-order seat count; it's surfaced here too
+    -- so the total-vs-ours split is available from position metadata alongside
+    -- class_size.
     -- -------------------------------------------------------------------------
     r.class_size,
+    r.number_of_openings,
+    r.number_of_other_vendors,
 
     -- -------------------------------------------------------------------------
     -- Legacy / Cross-Reference
