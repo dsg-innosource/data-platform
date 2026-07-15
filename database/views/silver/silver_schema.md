@@ -6,6 +6,25 @@ this file is the cross-view index of material, behavior-changing edits.
 
 ---
 
+## 2026-07-15 — `v_positions_unified`: expose `number_of_openings` + `number_of_other_vendors`
+
+**Files:** `v_positions_unified.sql`.
+**Deploy:** standalone — run `v_positions_unified.sql` (DROP IF EXISTS + CREATE). No views depend on it (verified against prod), so the bare DROP succeeds without CASCADE. Additive column-only change; no downstream rebuild.
+
+### Why
+
+The Contract Staffing dashboard needs "total available seats (all vendors)" alongside "our seats." The three relevant `bronze.portal_requisitions` columns are `class_size` (total across all vendors), `number_of_openings` (our seats / recruiter-goal basis), and `number_of_other_vendors` (other vendors on the req). The view previously exposed only `class_size`, so the total-vs-ours split couldn't be read from position metadata.
+
+### What
+
+Added `number_of_openings` and `number_of_other_vendors` to `v_positions_unified`, pulled from `bronze.portal_requisitions` with the same keying as `class_size`. `is_pipeline` handling is unchanged — the view carries the flag as before; pipeline reqs are excluded downstream (e.g. the seat book), not here.
+
+### Validation
+
+Read-only against prod on 100 open, non-pipeline reqs: `class_size >= number_of_openings` in every populated row (equal in 92, greater in 5, never less), confirming `class_size` = total and `number_of_openings` = ours; 35 reqs carry other vendors. 3 rows have NULL `class_size` (req 8953 has 272 openings — a Portal backfill item; 9240/9389 are 0-opening junk reqs).
+
+---
+
 ## 2026-07-14 — `v_hires_unified`: cross-req double-count fix + termination-predates-hire exclusion
 
 **Files:** `v_hires_unified.sql`.
