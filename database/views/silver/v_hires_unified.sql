@@ -4,6 +4,43 @@
 --          Mirrors v_terminations_unified design for symmetry; the two views
 --          are intended to join on applicant_id (+ position_id) in reports.
 -- Created:  2026-04-17
+-- Modified: 2026-07-14 — (1) CROSS-REQUISITION DOUBLE-COUNT FIX. The
+--           requisition-scoped pending guard (2026-07-01) suppresses a pending
+--           row only when a type-6 Hired event exists on the SAME inferred
+--           requisition. But an applicant can Accept Offer on one requisition (a
+--           PIPELINE req) and have the Hired event logged on a DIFFERENT
+--           (placement) req for the same start — the pending row then survives
+--           alongside the confirmed row and the SAME start is counted twice
+--           (Prescribe Fit applicant 1428339: Accept Offer on pipeline req 9287,
+--           Hired event on placement req 9393, both 2026-07-13 — counted twice).
+--           885 applicants were affected (all cross-order). Fix: also suppress a
+--           pending row when the confirmed spine ALREADY carries this start — i.e.
+--           the applicant's latest Hired event falls on/before cu.hire_date's
+--           episode window (hire_date <= latest_event_date + 365), which is
+--           exactly when the confirmed branch decorates that event with
+--           episode_start = cu.hire_date. Genuine new stints are preserved: a
+--           rehire whose latest Hired event is >365d before the new start gets
+--           episode_start NULL on the confirmed spine, so the new guard does not
+--           fire and the pending row survives (GiftHealth-style unlogged classes,
+--           with NO prior event at all, are likewise untouched). See
+--           applicant_latest_event.latest_event_date + the pending_hires guard.
+--           (2) TERMINATION-PREDATES-HIRE EXCLUSION (adopts Portal's
+--           rsp_rpt_next_hires_report guard). Portal's hires report keeps a hire
+--           only when `hire_date <= terminated_date OR terminated_date IS NULL`;
+--           a stored terminated_date that PRE-dates the current hire_date is a
+--           stale prior-stint termination left on the record, and Portal treats
+--           that hire as not-yet-materialized (drops Addishin: term 2026-06-26,
+--           hire 2026-07-13). Adopted here on the CURRENT-episode start only:
+--           excluded when the row's episode start (es.episode_start on confirmed,
+--           ph.hire_date on pending) > canonical_users.terminated_date. Scoped to
+--           the current episode (episode_start is NULL on older/rehire confirmed
+--           events) so deep history — outside Portal's current-stint window — is
+--           left intact. 46 rows excluded (39 confirmed current-episode + 7
+--           pending). Portal's other filter, excluding "Never started / delayed"
+--           (termination_reason_id = 13), is already reflected here via the
+--           evidence gate (arm 2 ignores reason 13) and is_offering_excluded.
+--           Both fixes flow into silver.v_hire_retention (its start denominator
+--           is this view) — deploy rebuilds it via deploy_hires.sql.
 -- Modified: 2026-07-09 — ADP-PIT STALE-STINT TIEBREAK (both branches). The
 --           point-in-time ADP lookup took the earliest post-event snapshot with
 --           no tiebreak; when that snapshot carries multiple positions (an old
@@ -163,12 +200,20 @@
 --                     most-recent Accept Offer (type 8), since there is no hire
 --                     event to read the requisition from.
 --
---     NO DOUBLE COUNTING: the pending source requires NOT EXISTS any type-6
---     event for the applicant (on any requisition), so a person is never both
---     'confirmed' and 'pending'. When the recruiter finally logs the event,
---     the same person stops matching the pending source and appears once as
---     'confirmed' — the row flips pending -> confirmed automatically, and its
---     event_id changes from -applicant_id to the real event id.
+--     NO DOUBLE COUNTING: a pending row is suppressed when EITHER (a) a type-6
+--     event exists on the same inferred (Accept Offer) requisition — the
+--     2026-07-01 requisition-scoped guard, which lets a genuine new stint on a
+--     new order surface — OR (b) the confirmed spine already carries THIS start:
+--     the applicant's latest type-6 event falls on/before hire_date's episode
+--     window (hire_date <= latest_event_date + 365), which is exactly when the
+--     confirmed branch decorates that event with episode_start = hire_date
+--     (2026-07-14). Guard (b) closes the cross-requisition gap guard (a) misses —
+--     Accept Offer on a pipeline req, Hired event logged on a different placement
+--     req, same start (885 applicants). When the recruiter logs the event on the
+--     same req, the pending row flips to 'confirmed' automatically (event_id goes
+--     from -applicant_id to the real id). A person may still be 'confirmed' on one
+--     order and 'pending' on a DIFFERENT order (a genuine rehire whose new start
+--     is >365d after the last logged event — guard (b) does not fire).
 --
 --     CONSUMERS:
 --       • "starting this week" / hires / net gain / retention — use ALL rows
@@ -418,11 +463,12 @@ hire_events AS (
 --     applicant 136818's 2017 Nationwide rows showed a 2026 Alliant start).
 --     Uses the de-duplicated hire_events so the anchor matches the emitted grain.
 applicant_latest_event AS (
-    SELECT applicant_id, event_id
+    SELECT applicant_id, event_id, latest_event_date
     FROM (
         SELECT
             applicant_id,
             id AS event_id,
+            DATE(created_at) AS latest_event_date,   -- 2026-07-14: episode window anchor for the pending cross-req guard
             ROW_NUMBER() OVER (
                 PARTITION BY applicant_id
                 ORDER BY created_at DESC, id DESC
@@ -442,6 +488,7 @@ canonical_users AS (
         id                                      AS user_id,
         applicant_id,
         hire_date,
+        terminated_date,                        -- current stint's termination (2026-07-14; proc's exclusion input)
         onboarding_department_id
     FROM bronze.portal_users
     WHERE applicant_id IS NOT NULL
@@ -544,6 +591,29 @@ pending_hires AS (
           -- arm 3: brand-new — evidence not landed yet (catches fresh classes).
           OR cu.hire_date >= CURRENT_DATE - INTERVAL '90 days'
       )
+      -- CROSS-REQUISITION DE-DUP (2026-07-14): also suppress when the confirmed
+      -- spine already carries THIS start. cu.hire_date is the current stint's
+      -- start; the confirmed branch attaches that same value to the applicant's
+      -- LATEST Hired event whenever it falls on/before event_date + 365 (episode
+      -- binding). So if such a latest event exists, this start is already counted
+      -- as 'confirmed' — even when the Hired event was logged on a DIFFERENT
+      -- requisition than the Accept Offer anchoring this pending row (the guard
+      -- above, scoped to acc.requisition_id, misses that). Preserves genuine new
+      -- stints: a rehire whose latest Hired event is >365d before the new start
+      -- gets episode_start = NULL on the confirmed spine, so this NOT EXISTS does
+      -- not fire; an applicant with no Hired event at all (unlogged fresh class)
+      -- has no applicant_latest_event row, so it does not fire either.
+      AND NOT EXISTS (
+          SELECT 1
+          FROM applicant_latest_event ale
+          WHERE ale.applicant_id = a.id
+            AND cu.hire_date <= ale.latest_event_date + 365
+      )
+      -- TERMINATION-PREDATES-HIRE (2026-07-14): adopt Portal's hires-report guard
+      -- `hire_date <= terminated_date OR terminated_date IS NULL`. A stored
+      -- terminated_date that pre-dates the current hire_date is a stale prior-stint
+      -- termination; Portal treats that hire as not-yet-materialized and drops it.
+      AND (cu.terminated_date IS NULL OR cu.hire_date <= cu.terminated_date)
 )
 
 SELECT
@@ -734,6 +804,19 @@ LEFT JOIN silver.v_department_offering vdo
 -- The Hired filter (requisition_statistic_type_id = 6) now lives in the
 -- hire_events CTE, alongside the same-day de-duplication.
 
+-- TERMINATION-PREDATES-HIRE (2026-07-14): adopt Portal's hires-report guard
+-- (`hire_date <= terminated_date OR terminated_date IS NULL`) on the CURRENT
+-- episode only. es.episode_start is the current stint's start (cu.hire_date),
+-- populated ONLY on the applicant's latest Hired event within the episode window
+-- and NULL on older/rehire events — so this excludes exactly the current-stint
+-- rows Portal governs (a stale prior-stint termination sitting on the record with
+-- a later hire_date) and leaves deep history, outside Portal's window, intact.
+WHERE NOT (
+        es.episode_start     IS NOT NULL
+    AND cu.terminated_date   IS NOT NULL
+    AND es.episode_start > cu.terminated_date
+)
+
 
 -- ── Pending branch ────────────────────────────────────────────────────────
 -- Status-backed hires with a start date but no logged event yet. Column list
@@ -898,11 +981,28 @@ TWO ROW SOURCES (hire_confirmation_status):
              genuinely new stint on a NEW order surfaces even for someone with a
              prior confirmed hire (a rehire gets its own row). When no Accept
              Offer anchors an episode the guard falls back to applicant-wide.
+             CROSS-REQ DE-DUP (2026-07-14): a pending row is ALSO suppressed when
+             the confirmed spine already carries this start (the applicant''s
+             latest Hired event is on/before hire_date + 365, so it decorates that
+             event with episode_start = hire_date) — closes the case where Accept
+             Offer is on a pipeline req but the Hired event was logged on a
+             different placement req for the same start (885 applicants). Genuine
+             new stints (>365d after the last logged event) are preserved.
              A pending row flips to confirmed automatically when its event is
              logged. The evidence gate is STABLE — a real hire never ages out;
              only un-materialized phantoms (no payroll, no real termination, not
              recent) drop after 90 days. Default queries include both sources;
              filter to confirmed for event-only counts.
+
+TERMINATION-PREDATES-HIRE EXCLUSION (2026-07-14): adopts Portal
+rsp_rpt_next_hires_report''s guard `hire_date <= terminated_date OR
+terminated_date IS NULL`. A row is dropped when its CURRENT-episode start
+(episode_start on confirmed, hire_date on pending) postdates
+portal_users.terminated_date — a stale prior-stint termination left on the
+record. Scoped to the current episode (episode_start is NULL on older confirmed
+events), so deep history outside Portal''s current-stint window is unaffected.
+Portal''s companion filter (exclude termination_reason_id = 13, "Never started /
+delayed") is already reflected via the evidence gate and is_offering_excluded.
 
 INVARIANT (2026-07-01): row identity / uniqueness is per (source_system,
 event_id) as before, but confirmed-vs-pending exclusivity is now per
@@ -1035,6 +1135,32 @@ OFFERING ENRICHMENT (2026-06-03):
 --    WHERE hire_confirmation_status = 'confirmed'
 --      AND actual_start_date IS NOT NULL
 --      AND (actual_start_date - event_date) > 365;
+
+-- 2e3. CROSS-REQ DE-DUP held (2026-07-14) — no applicant has a confirmed AND a
+--      pending row for the SAME actual_start_date. This is the cross-requisition
+--      double-count (Accept Offer on one req, Hired event on another). Expect
+--      zero rows; pre-fix this returned 885 applicants.
+--    SELECT h1.applicant_id, h1.actual_start_date,
+--           h1.order_id AS confirmed_order, h2.order_id AS pending_order
+--    FROM silver.v_hires_unified h1
+--    JOIN silver.v_hires_unified h2
+--      ON h2.applicant_id = h1.applicant_id
+--     AND h2.actual_start_date = h1.actual_start_date
+--    WHERE h1.hire_confirmation_status = 'confirmed'
+--      AND h2.hire_confirmation_status = 'pending';
+
+-- 2e4. TERMINATION-PREDATES-HIRE held (2026-07-14) — no surfaced row has its
+--      current-episode start postdating the canonical terminated_date. Expect
+--      zero rows.
+--    WITH cu AS (
+--      SELECT DISTINCT ON (applicant_id) applicant_id, hire_date, terminated_date
+--      FROM bronze.portal_users WHERE applicant_id IS NOT NULL
+--      ORDER BY applicant_id, is_active DESC, created_at DESC)
+--    SELECT COUNT(*) FROM silver.v_hires_unified h
+--    JOIN cu ON cu.applicant_id = h.applicant_id
+--    WHERE h.actual_start_date = cu.hire_date
+--      AND cu.terminated_date IS NOT NULL
+--      AND cu.hire_date > cu.terminated_date;
 
 -- 2f. GiftHealth 6/22 class surfaces as pending — expect 11 (orders 9342/9344).
 --    SELECT full_name, order_id, actual_start_date, hire_confirmation_status
