@@ -4,6 +4,25 @@
 --          Mirrors v_terminations_unified design for symmetry; the two views
 --          are intended to join on applicant_id (+ position_id) in reports.
 -- Created:  2026-04-17
+-- Modified: 2026-07-16 — IS_NOSHOW FLAG. New boolean column flagging starts that
+--           were cancelled as "Never started / delayed": TRUE when a
+--           termination_reason_id = 13 termination exists on/after the row's
+--           actual_start_date (same rule v_hire_retention has used to DROP
+--           no-shows since 2026-07-01, computed here from bronze so this view
+--           gains no dependency on v_terminations_unified). The view keeps the
+--           rows (a no-show is still a real offer-accepted-start-scheduled fact);
+--           consumers answering "how many hires / who started" must filter
+--           is_noshow = FALSE. Motivation: Q2-2026 Goodyear Flex recon vs ADP —
+--           the view said 252 starts, ADP payroll said 227; 29 rows get flagged:
+--           28 "Never started / delayed" cancellations that never reached
+--           payroll (16 confirmed + 12 pending rows) plus 1 contradictory record
+--           (a reason-13 term alongside a real term for the same stint —
+--           v_hire_retention already drops that case identically). FALSE when
+--           actual_start_date IS NULL (no start to no-show). Note the pending
+--           evidence gate is unchanged: arm 3 (trailing 90 days) still admits a
+--           recent no-show and arm 2 ignores reason 13, so a flagged pending
+--           no-show ages OUT of the view after 90 days — is_noshow = FALSE
+--           counts stay stable through that transition; raw COUNT(*) does not.
 -- Modified: 2026-07-14 — (1) CROSS-REQUISITION DOUBLE-COUNT FIX. The
 --           requisition-scoped pending guard (2026-07-01) suppresses a pending
 --           row only when a type-6 Hired event exists on the SAME inferred
@@ -526,6 +545,22 @@ terminated_applicants AS (
     GROUP BY pu.applicant_id
 ),
 
+-- 4a2. Latest "Never started / delayed" cancellation per applicant — input for
+--      the is_noshow flag (2026-07-16). The complement of terminated_applicants:
+--      ONLY reason 13 (= v_terminations_unified.is_excluded). A row is flagged
+--      is_noshow when this date falls on/after its actual_start_date — the same
+--      rule v_hire_retention uses to DROP no-shows, computed from bronze so this
+--      view stays independent of v_terminations_unified. MAX() suffices for the
+--      existence test: max(noshow_date) >= start ⟺ some noshow_date >= start.
+noshow_terminations AS (
+    SELECT pu.applicant_id, MAX(t.termination_date) AS last_noshow_term_date
+    FROM bronze.portal_terminations t
+    JOIN bronze.portal_users pu ON pu.id = t.user_id
+    WHERE pu.applicant_id IS NOT NULL
+      AND t.termination_reason_id = 13         -- "Never started / delayed" only
+    GROUP BY pu.applicant_id
+),
+
 -- 4b. PENDING hires — status "Hired" + start date set, but NO logged event,
 --    AND evidence the start was real (see header "PENDING HIRES" / EVIDENCE
 --    GATE). One row per applicant at most: canonical_users is DISTINCT ON
@@ -712,7 +747,15 @@ SELECT
         WHEN adp_pit.dept_code  IS NOT NULL THEN 'adp_pit'
         WHEN onboard_dept.code  IS NOT NULL THEN 'onboarding_dept'
         ELSE                                         NULL
-    END                                             AS offering_source
+    END                                             AS offering_source,
+
+    -- ── No-show flag (2026-07-16) ─────────────────────────────────────────
+    -- TRUE when this row's start was cancelled as "Never started / delayed"
+    -- (a reason-13 termination on/after actual_start_date — the rule
+    -- v_hire_retention drops on). FALSE when actual_start_date IS NULL
+    -- (NULL >= comparison → NULL → COALESCE). "How many hires / who started"
+    -- consumers must filter is_noshow = FALSE.
+    COALESCE(ns.last_noshow_term_date >= es.episode_start, FALSE)  AS is_noshow
 
 FROM hire_events rs
 
@@ -748,6 +791,11 @@ LEFT JOIN recruiters rec
 -- bound: a start BEFORE the event is the normal event-logging lag, not a defect.
 LEFT JOIN applicant_latest_event ale
     ON ale.applicant_id = rs.applicant_id
+
+-- No-show flag input (2026-07-16) — see the noshow_terminations CTE.
+LEFT JOIN noshow_terminations ns
+    ON ns.applicant_id = rs.applicant_id
+
 LEFT JOIN LATERAL (
     SELECT
         (rs.id = ale.event_id
@@ -894,7 +942,15 @@ SELECT
         WHEN adp_pit.dept_code  IS NOT NULL THEN 'adp_pit'
         WHEN onboard_dept.code  IS NOT NULL THEN 'onboarding_dept'
         ELSE                                         NULL
-    END                                             AS offering_source
+    END                                             AS offering_source,
+
+    -- ── No-show flag (2026-07-16) ─────────────────────────────────────────
+    -- Same rule as the confirmed branch, anchored on this row's start
+    -- (ph.hire_date, never NULL here). NOTE: a flagged pending no-show ages
+    -- out of the view entirely after 90 days (evidence-gate arm 3 expires,
+    -- arm 2 ignores reason 13) — is_noshow = FALSE counts are stable through
+    -- that transition; raw COUNT(*) is not.
+    COALESCE(ns.last_noshow_term_date >= ph.hire_date, FALSE)  AS is_noshow
 
 FROM pending_hires ph
 
@@ -907,6 +963,10 @@ LEFT JOIN bronze.portal_clients c
     ON c.id = COALESCE(CASE WHEN NOT COALESCE(r.is_pipeline, FALSE)
                             THEN r.client_id END,
                        ph.applicant_client_id)
+
+-- No-show flag input (2026-07-16) — see the noshow_terminations CTE.
+LEFT JOIN noshow_terminations ns
+    ON ns.applicant_id = ph.applicant_id
 
 -- Offering enrichment, same chain as the confirmed branch but anchored on the
 -- start date (no event date exists). Requires idx_adp_tenure_applicant_snap.
@@ -993,6 +1053,18 @@ TWO ROW SOURCES (hire_confirmation_status):
              only un-materialized phantoms (no payroll, no real termination, not
              recent) drop after 90 days. Default queries include both sources;
              filter to confirmed for event-only counts.
+
+IS_NOSHOW (2026-07-16): TRUE when the row''s start was cancelled as "Never
+started / delayed" — a termination_reason_id = 13 termination on/after
+actual_start_date (the same rule v_hire_retention uses to DROP no-shows,
+computed from bronze). Rows are KEPT and flagged: a no-show is still a real
+offer-accepted-start-scheduled fact, but the person never reached payroll.
+"How many hires / who started" consumers must filter is_noshow = FALSE
+(Q2-2026 Goodyear Flex: 252 raw rows, 29 no-shows, 223 real starts vs 227 on
+ADP). FALSE when actual_start_date IS NULL. A flagged PENDING no-show ages out
+of the view after 90 days (evidence-gate arm 3 expires; arm 2 ignores reason
+13), so is_noshow = FALSE counts are stable through that transition while raw
+COUNT(*) is not.
 
 TERMINATION-PREDATES-HIRE EXCLUSION (2026-07-14): adopts Portal
 rsp_rpt_next_hires_report''s guard `hire_date <= terminated_date OR
@@ -1162,6 +1234,30 @@ OFFERING ENRICHMENT (2026-06-03):
 --      AND cu.terminated_date IS NOT NULL
 --      AND cu.hire_date > cu.terminated_date;
 
+-- 2e5. IS_NOSHOW flag (2026-07-16) — agrees with the v_hire_retention exclusion
+--      rule on the shared window (starts in the trailing 365 days): every
+--      is_noshow row is absent from retention, every is_noshow = FALSE row with
+--      a start is present. Expect zero rows.
+--    SELECT COUNT(*)
+--    FROM silver.v_hires_unified h
+--    LEFT JOIN silver.v_hire_retention r ON r.hire_event_id = h.event_id
+--    WHERE h.actual_start_date >= (CURRENT_DATE - INTERVAL '365 days')::date
+--      AND ((h.is_noshow AND r.hire_event_id IS NOT NULL)
+--        OR (NOT h.is_noshow AND r.hire_event_id IS NULL));
+--
+-- 2e6. IS_NOSHOW fixture — Q2-2026 Goodyear Flex recon vs ADP (the motivating
+--      case). Expect total 252, noshow 29, real starts 223 (ADP payroll showed
+--      227; the residual is 3 ADP hires never entered in Portal + 1
+--      contradictory-record edge case). Historical fixture — numbers valid as
+--      of 2026-07-16; pending no-shows age out after 90 days, after which
+--      total/noshow shrink together and real_starts holds 223.
+--    SELECT COUNT(*)                            AS total,
+--           COUNT(*) FILTER (WHERE is_noshow)   AS noshow,
+--           COUNT(*) FILTER (WHERE NOT is_noshow) AS real_starts
+--    FROM silver.v_hires_unified
+--    WHERE offering = 'Flex' AND is_offering_excluded = FALSE
+--      AND actual_start_date BETWEEN '2026-04-01' AND '2026-06-30';
+--
 -- 2f. GiftHealth 6/22 class surfaces as pending — expect 11 (orders 9342/9344).
 --    SELECT full_name, order_id, actual_start_date, hire_confirmation_status
 --    FROM silver.v_hires_unified

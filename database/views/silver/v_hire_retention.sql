@@ -117,3 +117,4 @@ COMMENT ON COLUMN silver.v_hire_retention.active_at_6w IS 'Survived to the 6-wee
 COMMENT ON COLUMN silver.v_hire_retention.active_at_8w IS 'Survived to the 8-week mark: no termination, or terminated >56 days after start. Only meaningful where reached_8w.';
 COMMENT ON COLUMN silver.v_hire_retention.active_at_15w IS 'Survived to the 15-week mark: no termination, or terminated >105 days after start. Only meaningful where reached_15w.';
 COMMENT ON COLUMN silver.v_hire_retention.is_currently_active IS 'No termination as of CURRENT_DATE (or termination future-dated). Powers the Active column in retention-by-client.';
+
