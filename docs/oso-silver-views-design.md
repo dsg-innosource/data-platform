@@ -151,6 +151,32 @@ Minnie Studio computes display-only deltas meanwhile.
 - Page under a new sidebar section or Operations; per-client SLA cards mirroring
   the mockup; GREEN/YELLOW pills deferred with targets
 
+## Hours addendum (2026-07-20) — ADP payroll feed landed
+
+The "own project" from finding #2 resolved: ADP payroll hours arrived as
+`bronze.assoc_hours_by_pay_period` (per-associate per pay period; **manual load
+for now**, no scheduled ingest). Profile (24,773 rows, no NULLs, unique on
+applicant × dept × period × pay date):
+
+| Dept | Client | Cadence | Coverage |
+|---|---|---|---|
+| 112998 | AEP | weekly, Mon–Sun (= ISO weeks) | 2023-02-20 → current |
+| 112996 | AEP (legacy) | bi-weekly | Jan–Feb 2023 only |
+| 110307 / 110308 | Alliant Energy | bi-weekly, two cycles offset one day, **shared pay dates** | Dec 2024 → current |
+
+Decisions (Sean, 2026-07-20):
+
+| Decision | Choice |
+|---|---|
+| Grain | **Native pay-period** — actual paid hours, no weekly allocation/approximation. Alliant displays bi-weekly; AEP's pay week happens to equal the ISO week. |
+| Hours basis | **Total paid = regular + OT + other** (other = paid absence; spikes on holiday weeks). |
+| Program-level hours KPI | **Dropped** — weekly vs bi-weekly spans aren't comparable; hours live on the client cards only. |
+| Views | `v_associate_hours_by_pay_period` (cleaned associate grain, general-purpose) → `v_oso_payroll_hours_by_period` (client × pay date; Alliant's two cycles merge on the shared pay date). Deploy in that order. `v_oso_weekly_summary` untouched; its attendance-hours columns stay provisional/suppressed. |
+| Reconciliation | **Gate before dashboard ships:** feed shows Alliant ~14k paid hrs / bi-weekly period (~7k/wk-equiv) vs the packet's ~3,180/wk quoted in June — verify one known packet week (Abby/Steve SharePoint) before merge. |
+
+Correction rows (negative hours components, 15 rows) are payroll reversals —
+kept in the views; sum, don't filter.
+
 ## Open items
 
 1. ~~Headcount source~~ → resolved: fact_active_headcount × drm.
@@ -160,6 +186,6 @@ Minnie Studio computes display-only deltas meanwhile.
 5. ~~AEP semantics~~ → validated: daily_data ≡ half-hour rollup, exact match.
 6. ~~Alliant activity codes~~ → moot for the dashboard (hours deferred); still relevant if v_oso_hours_daily gets operational use.
 7. "SLA Compliance" KPI — needs targets + compliance rule; deferred with targets.
-8. **Hours feed (NEW — own project)** — identify the post-mid-2025 AEP/Alliant billing system (Abby/accounting); interim option is the SharePoint hours file. Then add `v_oso_hours_weekly` (the portal_invoice_details design is ready if billing ever returns to the portal) and repoint the weekly summary.
+8. ~~Hours feed~~ → resolved 2026-07-20: ADP payroll feed (`bronze.assoc_hours_by_pay_period`) + the two views above (see Hours addendum). Remaining: reconcile vs exec packet; automate the currently-manual bronze load.
 9. **Alliant intraday ingest (NEW)** — get Jourdan's spreadsheet flow into bronze; supplies Alliant ASA + AHT.
 10. **Metabase alignment (NEW)** — reconcile with Jourdan's AEP Metabase models when built; agree-but-not-identical.

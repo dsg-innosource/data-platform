@@ -6,6 +6,27 @@ this file is the cross-view index of material, behavior-changing edits.
 
 ---
 
+## 2026-07-20 — New views: `v_associate_hours_by_pay_period` + `v_oso_payroll_hours_by_period` (ADP payroll hours)
+
+**Files:** `v_associate_hours_by_pay_period.sql`, `v_oso_payroll_hours_by_period.sql`.
+**Deploy:** associate view first (the OSO rollup selects from it). Both `CREATE OR REPLACE` on new names — no drops, nothing else touched. Deployed 2026-07-20.
+
+### Why
+
+The authoritative "Hours (Week)" metric for the OSO dashboard was deferred dashboard-wide in the 2026-06-04 source validation (attendance/login hours never matched the exec packet; ADP payroll hours were "a feed not yet in the warehouse" — see `docs/oso-silver-views-design.md`). That feed landed as `bronze.assoc_hours_by_pay_period` (per-associate paid hours by pay period; **manual load** for now).
+
+### What
+
+- `v_associate_hours_by_pay_period` — cleaned associate grain over the bronze feed, joined to `department_reporting_map` for client/offering. `hours_paid` = regular + OT + other (other = paid absence). Correction rows with negative components kept.
+- `v_oso_payroll_hours_by_period` — client × pay date (OSO only). Grouping on pay date merges Alliant's two one-day-offset bi-weekly department cycles into one row per pay event; AEP rows are Mon–Sun pay weeks (= ISO weeks). Carries a `cadence` label; spans are not comparable across clients.
+- Native pay-period grain by decision (2026-07-20): actual paid hours, no weekly allocation. `v_oso_weekly_summary` is untouched; its attendance-hours columns remain provisional/suppressed.
+
+### Validation
+
+Profiled 24,773 bronze rows: zero NULLs in any column, unique on (applicant, dept, period_start, pay_date); all 4 department codes map cleanly (112996/112998 → AEP, 110307/110308 → Alliant Energy). Rollup spot-check: AEP ~3.7–4.3k paid hrs/week, Alliant ~13.9–14.7k per merged bi-weekly period, 193–200 associates paid. ⚠ Reconciliation vs the exec packet (~3,180/wk quoted for Alliant in June vs ~7k/wk-equivalent here) is pending — gate for the dashboard, not the views.
+
+---
+
 ## 2026-07-15 — `v_positions_unified`: expose `number_of_openings` + `number_of_other_vendors`
 
 **Files:** `v_positions_unified.sql`.
