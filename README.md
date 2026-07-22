@@ -1,5 +1,13 @@
 # Data Platform
 
+> **⚠️ ARCHIVED (July 2026).** The living parts of this repo — the silver view
+> DDL (`database/views/silver/`), the OSO views design doc, and the ad-hoc
+> query helper (`shared/query.py`) — moved to
+> [`dsg-innosource/minnie-studio`](https://github.com/dsg-innosource/minnie-studio)
+> under `warehouse/`. Maintain them there. Everything else here (adp-headcount,
+> monthly-billing, swim-campaigns, resume-fraud-detection, reporting/Dagster)
+> is dormant or superseded by Minnie Studio and kept read-only for reference.
+
 The one-stop-shop for data governance, analytics, and data pipeline work at InnoSource. This repo follows a **Data as a Product** methodology — every data asset should have clear purpose, defined users, ownership, and documentation.
 
 ## What's In Here
